@@ -1,0 +1,69 @@
+.process {
+  min-width: 0;
+  width: 100%;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.processToggle, .groupToggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 28px;
+  border: 0;
+  padding: 2px 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  line-height: 24px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.processToggle {
+  margin-bottom: 16px;
+}
+
+.processToggle:focus-visible, .groupToggle:focus-visible {
+  outline: 2px solid var(--dsw-static-deepseek-500, #416aff);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.groupToggle > svg { flex: 0 0 auto; }
+.groupTitle { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
+.count { flex-shrink: 0; font-size: 12px; }
+.flow, .answer { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.flow[hidden] { display: none; }
+.flow { border-top: 1px solid var(--dsw-alias-border-l2); padding-top: 16px; }
+.answer { color: var(--dsw-alias-label-primary); }
+.flow:not([hidden]) + .answer { margin-top: 24px; }
+.prose { min-width: 0; color: var(--dsw-alias-label-primary); overflow-wrap: anywhere; }
+.prose :global(p) { margin: 0 0 12px; }
+.prose :global(p:last-child) { margin-bottom: 0; }
+.activities { display: flex; flex-direction: column; gap: 8px; padding: 8px 0 0 20px; min-width: 0; }
+.reasoning { margin: 8px 0 0 24px; font-size: 13px; overflow-wrap: anywhere; }
+.error { color: var(--dsw-alias-state-error-primary, #b42318); }
+.spinner { animation: codex-spin 1.4s linear infinite; }
+@keyframes codex-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+
+/* Only the leaf occurrence represented by a mounted process is suppressed.
+   Keep native tool-slot ownership and unrelated subtrees untouched. */
+:global([data-chat-flow-kind='assistant-step']):has(> :global([data-slot]) > :global([data-codex-native-assistant])) {
+  display: none;
+}
+:global([data-chat-flow-kind='tool-call']):has(> :global([data-slot]) > :global([data-chat-call-id]) > :global([data-slot]) > :global([data-codex-grouped-call])) {
+  display: none;
+}
+:global([data-chat-flow-kind='context']):has(> :global([data-slot]) > :global([data-codex-internal-context])) {
+  display: none;
+}
+:global([data-chat-flow-kind='relay-codex-process']):has(> :global([data-slot]) > :global([data-codex-process-fallback])) {
+  display: none;
+}
+:global([data-chat-flow]):has(:global([data-codex-process-turn][data-status='running'])) > :global([role='status'][aria-live='polite']) {
+  display: none;
+}

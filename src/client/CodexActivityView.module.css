@@ -1,0 +1,89 @@
+.activity {
+  width: min(100%, 960px);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.row {
+  min-width: 0;
+  max-width: 100%;
+  gap: 8px;
+}
+
+.title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 0 1 auto;
+  font-size: 14px;
+  line-height: 24px;
+}
+
+.summary {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.summary :first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail {
+  margin: 8px 0 12px 28px;
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-background-container, #f6f6f7);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.detailBlock {
+  min-width: 0;
+}
+
+.detailLabel {
+  padding: 10px 12px 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.detail pre {
+  max-height: 360px;
+  margin: 0;
+  padding: 10px 12px 12px;
+  overflow: auto;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-markdown-code-block-small);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.provenance {
+  padding: 10px 12px 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  padding: 8px 12px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 18px;
+}

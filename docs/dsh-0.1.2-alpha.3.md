@@ -1,0 +1,37 @@
+# DSH 三版本兼容
+
+同一个 `0.2.1` 稳定包的兼容目标：
+
+| DSH | 官方提交 |
+| --- | --- |
+| `0.1.1-rc.2` | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` |
+| `0.1.2-alpha.2` | `0a53fb55bea101816fa226bb964ae2bed71c343b` |
+| `0.1.2-alpha.3` | `dd6322d604e00eec1ba5e0c8541159906a21094a` |
+
+不按 DSH 版本分别发包；不要求旧用户先升级管理器。没有自定义精确版本白名单。
+DSH 可选 peer 使用版本范围表达声明，不把它当成旧宿主必然执行的安装拦截。
+稳定版通过 npm `latest` 发布；候选版 `0.2.0-rc.1` 保留在 `next` 通道。
+
+## 本插件变更
+
+`0.2.1` 不改变既有运行时功能；本次补丁公开记录 `0.1.2-alpha.3` 验收结果，并把发布 CI 的官方 DSH 基线更新到对应提交。
+
+Host 工具调用 ID 在 `ToolCallId` / `CallId` 之间按可用导出选择；会话预设读取兼容两种字段；前端事件注册按实际服务装配；过程视图兼容 `useChat` 与旧 `useSession().chat`、两种 locale 命名空间及 Markdown 标签。保留新版原生过程折叠时恢复原生消息的行为。
+
+## 验收方式与边界
+
+开发类型检查及构建使用准备好的官方 `0.1.2-alpha.3` 源码。构建一次后，将相同 tarball
+分别安装到三版官方 DSH 的独立临时 profile，检查 Host 启动、浏览器装配、功能注册及
+适用的受控功能；不修改官方源码或日常运行环境。
+跨插件结果在 Relay 的 `dsh-lab/dsh-0.1.2-alpha.3-20260901/` 中记录；插件独立测试命令：
+
+```sh
+npm ci --ignore-scripts
+# 非管理器插件需要准备好的官方 DSH 源码；管理器使用锁定的 npm 开发依赖。
+export DSH_ROOT=/path/to/prepared/official/deepseek-harness
+npm run verify
+```
+
+三版核心回归不等于所有外部服务、平台或未来 DSH 版本均已验证。
+Claude 真实识图/fork 仍暂缓；Codex Default 模式原生提问限制、Workbench 刷新后尺寸不保留
+均不在本次兼容修复中关闭。公开 npm/GitHub 发布后的完整升级路径将在发布完成后再次验收。
