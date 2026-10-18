@@ -1,7 +1,7 @@
+import { Code as IconCodeOutline16 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   Button,
-  IconCodeOutline16,
   Modal,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
@@ -30,6 +30,7 @@ interface WorkspaceState {
 }
 
 interface SessionState {
+  byId?: Record<string, { id: string; retainedBy?: { mainView?: number } }>
   current?: string
 }
 

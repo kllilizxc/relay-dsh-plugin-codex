@@ -24,3 +24,10 @@ export function modelDirectory(ctx, sessionId) {
     },
   };
 }
+
+// The controller catalog no longer owns navigation. Main-view retention is the
+// public selection fact; histories and sidebars must not become the current view.
+export function currentSessionId(state) {
+  if (typeof state?.current === 'string') return state.current;
+  return Object.values(state?.byId ?? {}).find(row => (row.retainedBy?.mainView ?? 0) > 0)?.id;
+}

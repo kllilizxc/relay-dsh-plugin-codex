@@ -1,6 +1,6 @@
 {
   "name": "relay-dsh-plugin-codex",
-  "version": "0.2.5-rc.1-fork.1",
+  "version": "0.2.5-rc.1-fork.2",
   "description": "Codex conversation backend for DeepSeek Harness, powered by the Codex App Server with approvals and DSH tool support.",
   "keywords": [
     "dsh-plugin",
@@ -14,7 +14,7 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "prepare:dsh": "bash scripts/link-dsh-development-peers.sh",
+    "prepare:dsh": "node scripts/link-dsh-development-peers.mjs",
     "prebuild": "npm run prepare:dsh && node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
     "build": "tsdown --config tsdown.config.ts",
     "postbuild": "node normalize-build.mjs",
@@ -50,7 +50,8 @@
     "docs/dsh-0.1.2-alpha.3.md",
     "dsh-compat.mjs",
     "dsh-client-compat.mjs",
-    "dsh-client-compat.d.mts"
+    "dsh-client-compat.d.mts",
+    "docs/dsh-0.2.1-rc.2.md"
   ],
   "dsh": {
     "client": {
@@ -72,7 +73,8 @@
         "@deepseek-ai/dsh-api-session-controller",
         "@deepseek-ai/dsh-api-workspace-controller",
         "@deepseek-ai/dsh-client-ui-chat",
-        "@deepseek-ai/dsh-client-ui-model-selection"
+        "@deepseek-ai/dsh-client-ui-model-selection",
+        "@deepseek-ai/dsh-client-ui-workspace"
       ],
       "platform": "web"
     },
@@ -81,10 +83,10 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-llm": ">=0.1.1-rc.2 <0.1.2-0 || >=0.1.2-alpha.2 <0.1.3-0 || 0.1.5-rc.2 || 0.1.6-alpha.1",
-    "@deepseek-ai/dsh-session": ">=0.1.1-rc.2 <0.1.2-0 || >=0.1.2-alpha.2 <0.1.3-0 || 0.1.5-rc.2 || 0.1.6-alpha.1",
-    "@deepseek-ai/dsh-typert-protocol": ">=0.1.1-rc.2 <0.1.2-0 || >=0.1.2-alpha.2 <0.1.3-0 || 0.1.5-rc.2 || 0.1.6-alpha.1",
-    "react": "^18.2.0"
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-session": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.1-rc.2",
+    "react": "^18.2.0 || ^19.0.0"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-llm": {
@@ -101,7 +103,7 @@
     }
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.2",
+    "@deepseek-ai/schemastery": "~3.18.5",
     "@openai/codex": "0.155.1",
     "lucide-react": "^1.37.0",
     "relay-dsh-plugin-session-import": "0.2.3"
@@ -109,15 +111,18 @@
   "devDependencies": {
     "@testing-library/dom": "^10.4.1",
     "@testing-library/react": "^16.3.2",
-    "@types/react": "~18.3.1",
-    "@types/react-dom": "^18.3.7",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
     "jsdom": "^29.1.1",
     "lightningcss": "1.32.0",
-    "react": "^18.2.0",
-    "react-dom": "^18.3.1",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
     "tsdown": "0.22.2",
     "typescript": "6.0.3",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.8",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-session": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.1-rc.2"
   },
   "private": true
 }

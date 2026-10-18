@@ -1,3 +1,4 @@
+import { currentSessionId } from '../../dsh-client-compat.mjs'
 import { installNativeSkills } from './native-skills.ts'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
@@ -45,7 +46,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-export const inject = ['inputTriggers', 'slots', 'theme', 'locale', 'sessions', 'workspaces', 'connection', 'settingsScope']
+export const inject = ['inputTriggers', 'slots', 'theme', 'locale', 'sessions', 'workspaces', 'connection', 'configForms', 'uiWorkspace']
 
 export function apply(ctx: ClientContext): () => void {
   installNativeSkills(ctx, 'codex')
@@ -62,10 +63,12 @@ export function apply(ctx: ClientContext): () => void {
 }
 
 function applyRuntimeSettings(ctx: ClientContext): void {
-  const card = new CodexCardController(ctx.settingsScope.bind({ namespace: CODEX_SETTINGS_NAMESPACE }))
-  ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
-    name: 'settings.plugin.item',
-    key: CODEX_SETTINGS_NAMESPACE,
+  const card = new CodexCardController(ctx.configForms.get(CODEX_SETTINGS_NAMESPACE))
+  ctx.effect(() => () => card.dispose(), 'relay-codex: settings subscription')
+  ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
+    name: 'settings.plugins.tab',
+    id: CODEX_SETTINGS_NAMESPACE,
+    label: () => ctx.locale.bind('relay.codex')('runtimeTitle'),
     locale: 'relay.codex',
     inject: () => card.inject(),
   }, CodexCard))
@@ -95,7 +98,7 @@ function applyConnectionStatus(ctx: ClientContext): void {
 function applySessionOpenSync(ctx: ClientContext): void {
   ctx.effect(() => observeSessionOpen(
     {
-      getSnapshot: () => ({ sessionId: ctx.sessions.list.getSnapshot().current }),
+      getSnapshot: () => ({ sessionId: currentSessionId(ctx.sessions.list.getSnapshot()) }),
       subscribe: listener => ctx.sessions.list.subscribe(listener),
     },
     (sessionId, isLatestSelection) => syncOpenedCodexSessionAndRefresh(
@@ -105,7 +108,7 @@ function applySessionOpenSync(ctx: ClientContext): void {
         (ctx.workspaces as typeof ctx.workspaces & { refresh(): Promise<void> }).refresh(),
       ]),
       fetch,
-      rebuiltSessionId => ctx.sessions.open(rebuiltSessionId as Parameters<typeof ctx.sessions.open>[0]),
+      rebuiltSessionId => ctx.uiWorkspace.openSession(rebuiltSessionId as Parameters<typeof ctx.uiWorkspace.openSession>[0]),
       undefined,
       isLatestSelection,
     ),

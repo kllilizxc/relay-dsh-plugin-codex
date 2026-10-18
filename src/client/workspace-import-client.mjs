@@ -1,7 +1,8 @@
+import { currentSessionId } from '../../dsh-client-compat.mjs';
 import { CODEX_IMPORT_PATH } from "../../codex-import-contract.mjs";
 
 export function resolveImportWorkspace(workspaces, sessions) {
-  const current = sessions?.current;
+  const current = currentSessionId(sessions);
   if (current !== undefined) {
     const owner = workspaces?.items?.find(workspace => workspace.sessionIds?.includes(current));
     if (owner) return owner;

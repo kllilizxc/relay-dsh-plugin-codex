@@ -1,3 +1,4 @@
+import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { useSyncExternalStore, type ComponentType } from 'react'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { ChatNodeViewProps } from '@deepseek-ai/dsh-client-ui-chat/client'
@@ -17,8 +18,10 @@ export function installProcessPresentation(ctx: ClientContext, debug: AdvancedDe
   conversationEvents(ctx).register(codexProcessDefinition)
   installContextPresentation(ctx, debug)
   ctx.slots.inject('conversation.chat.node', () => {
+    const takeover = createSnapshotStore(false)
     const disposeProcess = ctx.slots.register({
       name: 'conversation.chat.node', key: 'relay-codex-process',
+      inject: () => ({ hooks: { takeover } }),
     }, CodexProcessView)
     let previous: StoredEntry | undefined
     let disposeAssistant: (() => void) | undefined
@@ -30,17 +33,20 @@ export function installProcessPresentation(ctx: ClientContext, debug: AdvancedDe
       disposeAssistant = undefined
       previous = original
       // Fail open on a changed official contract, rather than losing native UI.
+      takeover.set(false)
       if (!original || original.children || original.store || original.inject
         || (original.locale !== 'chat' && original.locale !== 'conversation')) return
       const Original = original.component as ComponentType<CompatibleNodeProps<'assistant-step'>>
-      disposeAssistant = ctx.slots.register({
-        name: 'conversation.chat.node', key: 'assistant-step', priority: -20, locale: original.locale,
-      }, function CodexAssistantBoundary(props: CompatibleNodeProps<'assistant-step'>) {
+      function CodexAssistantBoundary(props: CompatibleNodeProps<'assistant-step'>) {
         const process = props.useTurnData('relay-codex-process')
         const mounted = useProcessPresence(props.sessionId, process?.turn ?? -1)
         if (mounted && canTakeOverCodexProcess(process) && process?.ownedSteps.includes(props.node.data.step)) return <span hidden data-codex-native-assistant />
         return <Original {...props} />
-      })
+      }
+      disposeAssistant = ctx.slots.register({
+        name: 'conversation.chat.node', key: 'assistant-step', priority: -20, locale: original.locale,
+      }, CodexAssistantBoundary)
+      takeover.set(true)
     }
     const unsubscribe = ctx.slots.subscribe('conversation.chat.node', reconcile)
     reconcile()

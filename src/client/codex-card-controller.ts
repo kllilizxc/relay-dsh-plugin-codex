@@ -1,5 +1,5 @@
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
-import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
+import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 
 export const CODEX_SETTINGS_NAMESPACE = 'relay-codex'
 
@@ -38,10 +38,14 @@ export class CodexCardController {
   private failed = false
   private readonly store: SnapshotStore<CodexCardState>
 
-  constructor(private readonly scope: SettingsScope<CodexSettings>) {
-    scope.subscribe(() => this.publish())
+  private readonly unsubscribe: () => void
+
+  constructor(private readonly scope: ConfigForm<CodexSettings>) {
+    this.unsubscribe = scope.subscribe(() => this.publish())
     this.store = createSnapshotStore(this.project())
   }
+
+  dispose(): void { this.unsubscribe() }
 
   private snapshot(): CodexCardState {
     const host = this.scope.getSnapshot()
@@ -111,8 +115,9 @@ export class CodexCardController {
     this.publish()
     void (async () => {
       try {
-        if (this.resetDraft) await this.scope.unset('codexCommand')
-        else await this.scope.set('codexCommand', this.draft ?? '')
+        const accepted = this.resetDraft ? await this.scope.unset('codexCommand')
+          : await this.scope.set('codexCommand', this.draft ?? '')
+        if (accepted === false) throw new Error('Host refused the settings change')
         this.draft = undefined
         this.draftMode = undefined
         this.resetDraft = false

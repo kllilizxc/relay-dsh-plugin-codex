@@ -4,7 +4,7 @@ import type { CodexCardFace, CodexRuntimeMode } from './codex-card-controller.ts
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import css from './CodexCard.module.css'
 
-export type CodexCardProps = PropsRuntime<'settings.plugin.item'>
+export type CodexCardProps = PropsRuntime<'settings.plugins.tab'>
   & PropsLocale<'relay.codex'>
   & InjectFace<CodexCardFace>
 
@@ -15,7 +15,7 @@ export function CodexCard(props: CodexCardProps) {
   if (!state.available) return null
   const disabled = !state.writable || state.saving
   return (
-    <li className={css.card}>
+    <div className={css.card}>
       <button type="button" className={css.header} aria-expanded={open}
         aria-label={`${t(open ? 'runtimeCollapse' : 'runtimeExpand')}: ${t('runtimeTitle')}`}
         onClick={() => setOpen(value => !value)}>
@@ -59,6 +59,6 @@ export function CodexCard(props: CodexCardProps) {
           <button type="button" className={css.save} disabled={!state.dirty || state.invalid || state.saving} onClick={props.save}>{state.saving ? t('runtimeSaving') : t('runtimeSave')}</button>
         </div>
       </div> : null}
-    </li>
+    </div>
   )
 }

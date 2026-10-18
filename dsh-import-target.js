@@ -574,13 +574,10 @@ function appendProjectedTurn(append, sourceTurn, turn) {
         step,
         message: freezeMessage({
           id: MessageId(entry.resultId),
-          role: "user",
-          content: [{
-            type: "tool-result",
-            toolCallId: callId,
-            content: entry.resultContent,
-            isError: entry.isError,
-          }],
+          role: "tool",
+          toolCallId: callId,
+          content: entry.resultContent,
+          isError: entry.isError,
           source: { kind: "tool", callId },
         }),
         ...(entry.error ? { error: entry.error } : {}),
@@ -811,8 +808,8 @@ function codexActivityRebuildReason(session, turns) {
     if (call.name !== entry.toolName || call.arguments !== entry.arguments) {
       return "codex-activity-call-drift";
     }
-    const block = result.message?.content?.[0];
-    if (block?.type !== "tool-result"
+    const block = result.message?.role === "tool" ? result.message : result.message?.content?.[0];
+    if ((result.message?.role !== "tool" && block?.type !== "tool-result")
       || block.isError !== entry.isError
       || jsonText(block.content) !== jsonText(entry.resultContent)
       || jsonText(result.meta) !== jsonText(entry.meta)) {

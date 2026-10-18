@@ -636,3 +636,18 @@ it('restores native rows when official compact mode folds the Codex process cont
   expect(container.querySelector('[data-codex-process-turn]')).not.toBeNull()
   expect(container.querySelector('[data-codex-grouped-call="command"]')).not.toBeNull()
 })
+
+it('renders generated images through the public gallery factory with the scoped loader', () => {
+  const image = attachment()
+  const state = processState([{ key: 'image', seq: 1, step: 0, kind: 'image', attachment: image, settled: true }], { status: 'completed' })
+  const loadImage = vi.fn()
+  const renderFactorySlot = vi.fn(() => <img alt="Authorized result" />)
+  const props = {
+    node: { data: state, location: { kind: 'turn', turn: { status: 'running' } } },
+    sessionId: 'gallery', loadImage, renderFactorySlot, useTurnData: () => undefined,
+    useChat: useEmptySession, openFile: vi.fn(), fileMentions: () => undefined,
+  } as unknown as React.ComponentProps<typeof CodexProcessView>
+  render(<CodexProcessView {...props} />)
+  expect(screen.getByAltText('Authorized result')).not.toBeNull()
+  expect(renderFactorySlot).toHaveBeenCalledWith('conversation.images.content', { images: [{ attachment: image }], align: 'start', loadImage })
+})

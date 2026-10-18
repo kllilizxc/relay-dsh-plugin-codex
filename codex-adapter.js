@@ -963,13 +963,11 @@ export class CodexDshAdapter extends LlmAdapter {
       agent.session.append("tool/result", {
         ...state.location,
         message: createMessage({
-          role: "user",
+          role: "tool",
           source: { kind: "tool", callId },
-          content: [{
-            type: "tool-result", toolCallId: callId,
-            content: [{ type: "text", text: payload.activity.output ?? payload.activity.title }],
-            isError: payload.activity.status === "error",
-          }],
+          toolCallId: callId,
+          content: [{ type: "text", text: payload.activity.output ?? payload.activity.title }],
+          isError: payload.activity.status === "error",
         }),
         meta: { codexActivity: payload },
       }, { surfaceOp: "append" });

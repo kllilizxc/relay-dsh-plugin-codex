@@ -14,9 +14,9 @@ test("Codex runtime owns one DSH settings namespace on both sides", () => {
   assert.match(host, /CODEX_SETTINGS_NAMESPACE = ["']relay-codex["']/);
   assert.match(host, /settings\?\.installSection\(ctx, CODEX_SETTINGS_NAMESPACE/);
   assert.match(host, /codexCommand: z\.string\(\)\.default\(""\)/);
-  assert.match(client, /ctx\.settingsScope\.bind\(\{ namespace: CODEX_SETTINGS_NAMESPACE \}\)/);
-  assert.match(client, /name: 'settings\.plugin\.item'/);
-  assert.match(client, /key: CODEX_SETTINGS_NAMESPACE/);
+  assert.match(client, /ctx\.configForms\.get\(CODEX_SETTINGS_NAMESPACE\)/);
+  assert.match(client, /name: 'settings\.plugins\.tab'/);
+  assert.match(client, /id: CODEX_SETTINGS_NAMESPACE/);
 });
 
 test("the settings card exposes staged runtime choices and reset semantics", () => {

@@ -25,6 +25,20 @@ afterEach(async () => {
 
 describe.each(['legacy', 'current'])('%s process presentation public slot wrappers', generation => {
 const locale = generation === 'legacy' ? 'conversation' : 'chat'
+  if (generation === 'current') it('yields whole-process takeover to the current native renderer with child slots', async () => {
+    const harness = setup(generation)
+    const presentation = { getSnapshot: () => ({}), subscribe: () => () => {} }
+    const inject = () => ({ hooks: { presentation } })
+    const children = {
+      'conversation.chat.reasoning.body': { kind: 'single', scope: 'session' },
+      'conversation.chat.message.images': { kind: 'single', scope: 'session' },
+    } as const
+    const Native = () => null
+    await act(async () => { harness.core.register({ name: slot, key: 'assistant-step', locale, children, inject } as never, Native) })
+    expect(winner(harness.core, 'assistant-step').component).toBe(Native)
+    const process = harness.core.entries(slot).find(entry => entry.options.key === 'relay-codex-process')!
+    expect((process.inject?.('main-session' as never) as any).hooks.takeover.getSnapshot()).toBe(false)
+  })
   it('waits for native registrations and restores the exact originals on disposal', async () => {
     const harness = setup(generation)
     expect(harness.registerProjection).toHaveBeenCalledExactlyOnceWith(codexProcessDefinition)

@@ -32,3 +32,9 @@ The native skill menu requires a DSH build with the `inputTriggers` client servi
 The source, generated `lib/` artifacts, and focused tests are kept together. For a local build, point `DSH_ROOT` at a compatible DSH source checkout and run `npm run build`. Run only tests relevant to a change unless you explicitly intend a full verification run.
 
 This repository does not contain local session data or compatibility run logs.
+
+## DSH 0.2.1-rc.2 candidate
+
+The local fork.2 migration and its verification limits are recorded in
+[the compatibility note](docs/dsh-0.2.1-rc.2.md). The session-import React peer
+still blocks a strict Desktop install; this candidate has not been published.

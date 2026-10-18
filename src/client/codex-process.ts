@@ -390,7 +390,7 @@ function foldCodexProcess(state: CodexProcessState, event: CompatibleSessionEven
       }) : unsupportedTool(next, event.seq)
     }
     case 'tool/result': {
-      const result = event.data.message.content[0]
+      const result = record(event.data.message)?.role === 'tool' ? event.data.message : record(event.data.message.content[0])
       const callId = event.data.message.source.callId
       const previous = next.segments.find(segment => segment.kind === 'activity' && segment.callId === callId)
       const payload = readActivityPayload(record(event.data.meta)?.codexActivity)
@@ -399,10 +399,10 @@ function foldCodexProcess(state: CodexProcessState, event: CompatibleSessionEven
       // Keep this window unsafe; prepend replays with the earlier call evidence.
       // The official tool reducer also loses call identity on a second result.
       if ((payload || previous?.activity) && (previous?.nativeCallSeq === undefined
-        || previous.messageId !== undefined || result.toolCallId !== callId)) {
+        || previous.messageId !== undefined || result?.toolCallId !== callId)) {
         next = { ...next, orphanResultSeq: next.orphanResultSeq ?? event.seq }
       }
-      const isError = result.isError === true || event.data.error !== undefined
+      const isError = result?.isError === true || event.data.error !== undefined
       if (payload) return upsertActivity(next, event.data.step, event.seq, { ...payload, phase: 'completed' }, {
         callId, isError, messageId: event.data.message.id,
       })

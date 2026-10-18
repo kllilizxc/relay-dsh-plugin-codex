@@ -3,3 +3,5 @@ import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-api-session-controller/client'
 import type {} from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
+
+import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'

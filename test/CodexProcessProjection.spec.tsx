@@ -119,6 +119,15 @@ function freeze<T>(value: T): T {
 }
 
 describe('Codex process projection', () => {
+  it('settles current tool-role results with the same identity and failure as legacy records', () => {
+    const old = result(3, 'item', 1, true)
+    const block = old.data.message.content[0] as any
+    const current = { ...old, data: { ...old.data, message: { ...old.data.message,
+      role: 'tool', toolCallId: block.toolCallId, content: block.content, isError: true,
+    } } } as unknown as typeof old
+    expect(state([start(), call(2), current, end(4)])).toEqual(state([start(), call(2), old, end(4)]))
+  })
+
   it('projects the current DSH assistant/live-chunk stream shape', () => {
     const live = {
       type: 'assistant/live-chunk', seq: 2, time: 200,

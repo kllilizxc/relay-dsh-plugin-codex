@@ -1,8 +1,8 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react'
 import { ChevronRight, ChevronDown, LoaderCircle, Brain, TriangleAlert } from 'lucide-react'
 import { MarkdownText, DisclosureRow } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ChatNodeOwnerProps, TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-chat/client'
-import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { PropsRuntime, PropsRenderFactories, InjectFace } from '@deepseek-ai/dsh-client-ui-slots'
 import { describeActivity, summarizeActivities } from '../../codex-activity-labels.mjs'
 import { ActivityIcon, ActivityRow } from './CodexActivityView.tsx'
 import { canTakeOverCodexProcess, codexProcessAnswerSegments, type CodexProcessSegment, type CodexProcessState } from './codex-process.ts'
@@ -11,12 +11,16 @@ import { codexProducedFileMentions } from './process-files.ts'
 import css from './CodexProcessView.module.css'
 import { useCompatibleChat } from './compatible-chat.ts'
 
-type ProcessProps = PropsRuntime<'conversation.chat.node', 'relay-codex-process'>
+interface ProcessAvailability { hooks: { takeover: import('@deepseek-ai/dsh-client-store').ObservableSnapshot<boolean> } }
+type ProcessProps = PropsRuntime<'conversation.chat.node', 'relay-codex-process'> & InjectFace<ProcessAvailability>
 type Item = { key: string; activities: CodexProcessSegment[] } | CodexProcessSegment
 const markdownLabels = { code: { copyLabel: 'Copy', copiedLabel: 'Copied' }, footnotes: 'Footnotes' }
 const compatibleMarkdownLabels = { labels: markdownLabels, codeLabels: markdownLabels.code }
-type CompatibleProcessProps = Omit<ProcessProps, 'useChat'> & {
+type RenderMessageImages = (owner: { images: import('@deepseek-ai/dsh-client-ui-chat/client').MessageImagesProps['images']; align: 'start' | 'end' }) => ReactNode
+
+type CompatibleProcessProps = PropsRenderFactories & Omit<ProcessProps, 'useChat'> & {
   useChat?: ProcessProps['useChat']
+  renderMessageImages?: RenderMessageImages
 }
 
 export function groupProcessSegments(segments: readonly CodexProcessSegment[]): Item[] {
@@ -32,7 +36,8 @@ export function groupProcessSegments(segments: readonly CodexProcessSegment[]): 
   return items
 }
 
-export function CodexProcessView({ node, sessionId, renderMessageImages, useTurnData, useChat, useSession, openFile, fileMentions, turnProcess }: CompatibleProcessProps) {
+export function CodexProcessView({ node, sessionId, renderMessageImages: legacyRenderImages, renderFactorySlot, loadImage, useTakeover = selector => selector(true), useTurnData, useChat, useSession, openFile, fileMentions, turnProcess }: CompatibleProcessProps) {
+  const renderMessageImages: RenderMessageImages = legacyRenderImages ?? (owner => renderFactorySlot('conversation.images.content', { ...owner, loadImage }))
   // Legacy activity has no numeric turn in its payload. Its visible anchor still
   // proves an intervening native row; do not move grouped prose across that row.
   const legacyBoundary = useCompatibleChat({ useChat, useSession }, snapshot => [...snapshot.nodes.values()].some(candidate =>
@@ -40,7 +45,8 @@ export function CodexProcessView({ node, sessionId, renderMessageImages, useTurn
       && candidate.anchorSeq <= (node.data.lastSeq ?? -1)))
   // Native compact mode controls the containing row. Yield ownership so its
   // final assistant answer remains visible outside the folded process range.
-  const safe = canTakeOverCodexProcess(node.data) && !legacyBoundary && !turnProcess?.foldable
+  const mayTakeOver = useTakeover(value => value)
+  const safe = mayTakeOver && canTakeOverCodexProcess(node.data) && !legacyBoundary && !turnProcess?.foldable
   useLayoutEffect(() => safe ? mountProcess(sessionId, node.data.turn) : undefined, [sessionId, node.data.turn, safe])
   const tail = useTurnData('turn-tail')
   const turn = node.location.kind === 'turn' || node.location.kind === 'step' ? node.location.turn : undefined
@@ -55,7 +61,7 @@ export function CodexProcessView({ node, sessionId, renderMessageImages, useTurn
 
 export function ProcessBody({ state, renderMessageImages, fileMentions }: {
   state: CodexProcessState
-  renderMessageImages: ChatNodeOwnerProps['renderMessageImages']
+  renderMessageImages: RenderMessageImages
   fileMentions?: ReturnType<ChatNodeOwnerProps['fileMentions']>
 }) {
   const [expanded, setExpanded] = useState<boolean | null>(null)
@@ -101,7 +107,7 @@ export function ProcessBody({ state, renderMessageImages, fileMentions }: {
 
 function ProcessItems({ segments, renderMessageImages, running, fileMentions, showImages = true }: {
   segments: readonly CodexProcessSegment[]
-  renderMessageImages: ChatNodeOwnerProps['renderMessageImages']
+  renderMessageImages: RenderMessageImages
   running: boolean
   fileMentions?: ReturnType<ChatNodeOwnerProps['fileMentions']>
   showImages?: boolean

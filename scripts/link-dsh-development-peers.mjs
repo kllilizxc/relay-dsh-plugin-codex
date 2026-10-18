@@ -12,7 +12,7 @@ const candidates = process.env.DSH_ROOT ? [resolve(process.env.DSH_ROOT)] : [
 const dsh = candidates.find(path => existsSync(join(path, 'apps/cli/package.json')));
 if (!dsh) throw new Error('Set DSH_ROOT to a prepared official deepseek-harness checkout.');
 const version = JSON.parse(readFileSync(join(dsh, 'apps/cli/package.json'), 'utf8')).version;
-const verifiedVersions = new Set(['0.1.2-alpha.2', '0.1.2-alpha.3', '0.1.2-rc.1', '0.1.5-rc.2', '0.1.6-alpha.1']);
+const verifiedVersions = new Set(['0.1.2-alpha.2', '0.1.2-alpha.3', '0.1.2-rc.1', '0.1.5-rc.2', '0.1.6-alpha.1', '0.2.1-rc.2']);
 if (!verifiedVersions.has(version)) {
   throw new Error(`Expected a verified DSH release, found ${version}. Select an audited official checkout.`);
 }
