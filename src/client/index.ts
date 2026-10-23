@@ -1,10 +1,12 @@
+import {installRuntimeSettings} from './CodexRuntimeSettings.tsx'
 import { installNativeSkills } from './native-skills.ts'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type { ChatNodeOwnerProps } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { SettingsSectionOwnerProps } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { SidebarFooterActionOwnerProps } from '@deepseek-ai/dsh-client-ui-sidebar/client'
-import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
+import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
+import type {SessionId} from '@deepseek-ai/dsh-session/types'
 import { AdvancedDebugPreference } from '../../advanced-debug-preference.mjs'
 import { installModelSelection, type ModelSelectionContext } from '../../model-selection.mjs'
 import {
@@ -28,8 +30,6 @@ import {
 } from './workspace-import-client.mjs'
 import { observeSessionOpen, syncOpenedCodexSessionAndRefresh } from './session-open-sync.mjs'
 import { conversationEvents, withConversationRuntime } from './compatible-runtime.ts'
-import { CodexCard } from './CodexCard.tsx'
-import { CODEX_SETTINGS_NAMESPACE, CodexCardController } from './codex-card-controller.ts'
 
 type DshSlotContractAnchors =
   | ChatNodeOwnerProps
@@ -45,30 +45,20 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-export const inject = ['inputTriggers', 'slots', 'theme', 'locale', 'sessions', 'workspaces', 'connection', 'settingsScope']
+export const inject = ['inputTriggers', 'slots', 'theme', 'locale', 'sessions', 'workspaces', 'connection', 'uiWorkspace', 'configForms']
 
 export function apply(ctx: ClientContext): () => void {
   installNativeSkills(ctx, 'codex')
   const advancedDebug = applyAdvancedDebug(ctx)
+  installRuntimeSettings(ctx)
   applyWorkspaceImport(ctx)
   applySessionOpenSync(ctx)
   applyConnectionStatus(ctx)
-  applyRuntimeSettings(ctx)
   return withConversationRuntime(ctx, inner => {
     applyActivityPresentation(inner)
     installProcessPresentation(inner, advancedDebug)
     return installModelSelection(inner as ModelSelectionContext, 'relay-codex', 'relay-codex', 'relay-claude')
   })
-}
-
-function applyRuntimeSettings(ctx: ClientContext): void {
-  const card = new CodexCardController(ctx.settingsScope.bind({ namespace: CODEX_SETTINGS_NAMESPACE }))
-  ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
-    name: 'settings.plugin.item',
-    key: CODEX_SETTINGS_NAMESPACE,
-    locale: 'relay.codex',
-    inject: () => card.inject(),
-  }, CodexCard))
 }
 
 function applyActivityPresentation(ctx: ClientContext): void {
@@ -95,7 +85,7 @@ function applyConnectionStatus(ctx: ClientContext): void {
 function applySessionOpenSync(ctx: ClientContext): void {
   ctx.effect(() => observeSessionOpen(
     {
-      getSnapshot: () => ({ sessionId: ctx.sessions.list.getSnapshot().current }),
+      getSnapshot: () => ({ sessionId: Object.values(ctx.sessions.list.getSnapshot().byId).find(session => (session.retainedBy.mainView ?? 0) > 0)?.id }),
       subscribe: listener => ctx.sessions.list.subscribe(listener),
     },
     (sessionId, isLatestSelection) => syncOpenedCodexSessionAndRefresh(
@@ -105,20 +95,17 @@ function applySessionOpenSync(ctx: ClientContext): void {
         (ctx.workspaces as typeof ctx.workspaces & { refresh(): Promise<void> }).refresh(),
       ]),
       fetch,
-      rebuiltSessionId => ctx.sessions.open(rebuiltSessionId as Parameters<typeof ctx.sessions.open>[0]),
-      undefined,
+      rebuiltSessionId => ctx.uiWorkspace.openSession(rebuiltSessionId as SessionId),
+      () => {},
       isLatestSelection,
     ),
     error => console.warn('Codex open-time history sync failed:', error),
+    () => null,
   ), 'relay-codex: open-time history sync')
 }
 
 function applyWorkspaceImport(ctx: ClientContext): void {
   const injected = (): WorkspaceImportInjected => ({
-    hooks: {
-      workspaceImportWorkspaces: ctx.workspaces.list,
-      workspaceImportSessions: ctx.sessions.list,
-    },
     scanWorkspace: cwd => scanCodexWorkspace(cwd),
     importWorkspace: (cwd, threadIds, onProgress) => importCodexWorkspace(cwd, { threadIds, onProgress }),
     refreshWorkspaceState: () => refreshImportedWorkspace(

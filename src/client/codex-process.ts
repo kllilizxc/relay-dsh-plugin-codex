@@ -390,7 +390,7 @@ function foldCodexProcess(state: CodexProcessState, event: CompatibleSessionEven
       }) : unsupportedTool(next, event.seq)
     }
     case 'tool/result': {
-      const result = event.data.message.content[0]
+      const result = event.data.message
       const callId = event.data.message.source.callId
       const previous = next.segments.find(segment => segment.kind === 'activity' && segment.callId === callId)
       const payload = readActivityPayload(record(event.data.meta)?.codexActivity)

@@ -1,18 +1,18 @@
+import type {SessionId} from '@deepseek-ai/dsh-session/types'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type { InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
-import type { SessionId } from '@deepseek-ai/dsh-session'
 import { sessionPreset } from '../../dsh-client-compat.mjs'
 
 type Skill = { name: string; description: string; path?: string; argumentHint?: string }
 
 export function nativeSkillSource(
   backend: 'codex' | 'claude',
-  isActive: (id: SessionId) => boolean,
+  isActive: (id: string) => boolean,
   request: typeof fetch = fetch,
 ): InputTriggerSource {
   // Share catalog reads across keystrokes; expire so newly installed skills appear.
-  const catalogs = new Map<SessionId, { at: number; value: Promise<Skill[]> }>()
+  const catalogs = new Map<string, { at: number; value: Promise<Skill[]> }>()
   return {
     trigger: '/', name: `relay-${backend}-skills`, order: 2, showGroupTitle: false,
     async candidates(session, { query, signal, position }) {
@@ -63,6 +63,6 @@ export function nativeSkillSource(
 
 export function installNativeSkills(ctx: Context, backend: 'codex' | 'claude'): void {
   ctx.effect(() => ctx.inputTriggers.registerSource(nativeSkillSource(backend, id =>
-    sessionPreset(ctx.sessions.list.getSnapshot().byId[id]) === `relay-${backend}`,
+    sessionPreset(ctx.sessions.list.getSnapshot().byId[id as SessionId]) === `relay-${backend}`,
   )), `relay-${backend}: native skills`)
 }

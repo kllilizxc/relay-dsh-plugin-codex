@@ -165,6 +165,7 @@ export class CodexSessionRuntime extends EventEmitter {
     baseInstructions,
     developerInstructions,
     ephemeral,
+    toolFree = false,
     serviceName = "relay_codex",
     threadSource = RELAY_THREAD_SOURCE,
   } = {}) {
@@ -173,12 +174,25 @@ export class CodexSessionRuntime extends EventEmitter {
     const selectedEffort = effort
       ?? this.models.find((candidate) => candidate.id === selectedModel)?.defaultReasoningEffort
       ?? null;
+    const config = newThreadConfig(this.bypassHookTrust);
+    if (toolFree) {
+      // dynamicTools excludes only host tools. Native MCP/plugin tools are inherited
+      // separately and otherwise start a process set for every short auxiliary call.
+      const effective = await this.client.request("config/read", { cwd, includeLayers: false });
+      config.mcp_servers = Object.fromEntries(
+        Object.keys(effective.config.mcp_servers ?? {}).map(name => [name, { enabled: false }]),
+      );
+      config.plugins = Object.fromEntries(
+        Object.keys(effective.config.plugins ?? {}).map(name => [name, { enabled: false }]),
+      );
+      config["features.code_mode_host"] = false;
+    }
     const result = await this.client.request("thread/start", compactObject({
       cwd,
       model: selectedModel,
       modelProvider: null,
       // Omit serviceTier to inherit native configuration; null resets it to default.
-      config: newThreadConfig(this.bypassHookTrust),
+      config,
       approvalsReviewer: "user",
       approvalPolicy,
       permissions: permissionProfile(selectedSandbox),
@@ -843,7 +857,8 @@ export class CodexSessionRuntime extends EventEmitter {
 
   emitChange() {
     if (this.closed) return;
-    this.emit("change", this.snapshot());
+    // Readers fetch only the state they need after this invalidation.
+    this.emit("change");
   }
 
   status() {

@@ -11,7 +11,8 @@ import type { CodexActivityData } from '../src/client/codex-activity.ts'
 const markdownProbe = vi.hoisted(() => vi.fn())
 
 
-vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
+vi.mock('@deepseek-ai/dsh-client-ui-primitives', async importOriginal => ({
+  localFileLinks: (await importOriginal<typeof import('@deepseek-ai/dsh-client-ui-primitives')>()).localFileLinks,
   MarkdownText: (props: { text: string; streaming?: boolean; fileMentions?: MarkdownFileMentions }) => {
     markdownProbe(props)
     const mention = props.fileMentions?.resolve(props.text)
@@ -46,6 +47,11 @@ import { initialCodexProcessState, type CodexProcessSegment, type CodexProcessSt
 
 const startedAt = 1000
 const renderImages = () => null
+const loadImage = () => undefined
+type ImageRenderInput = { images: readonly unknown[]; align?: string }
+const imageSlot = (render: (input: ImageRenderInput) => React.ReactNode) =>
+  (name: string, props: ImageRenderInput & { loadImage?: unknown }) =>
+    name === 'conversation.images.content' ? render({ images: props.images, align: props.align }) : null
 const useEmptySession: React.ComponentProps<typeof CodexProcessView>['useChat'] = selector =>
   selector({ nodes: new Map() } as never)
 
@@ -183,7 +189,7 @@ describe('ProcessBody', () => {
       tool('one'), prose('thinking', 'Check the assumptions.', 'reasoning'), tool('two'),
       prose('commentary', 'The dependency is available.'), tool('three'),
     ])
-    const { container } = render(<ProcessBody state={state} renderMessageImages={renderImages} />)
+    const { container } = render(<ProcessBody state={state} renderFactorySlot={imageSlot(renderImages)} loadImage={loadImage} />)
     expect([...container.querySelectorAll('[data-codex-activity-group]')].map(node => node.getAttribute('data-count'))).toEqual(['2', '1'])
     expect(screen.getByText('The dependency is available.').closest('[data-codex-commentary]')).not.toBeNull()
     expect(screen.queryByText('Check the assumptions.')).toBeNull()
@@ -193,7 +199,7 @@ describe('ProcessBody', () => {
 
   it('collapses prior work when a final answer arrives and preserves expanded descendants', () => {
     const segments = [prose('commentary', 'Checking the README.'), tool('read', reading('running'))]
-    const { rerender, container } = render(<ProcessBody state={processState(segments)} renderMessageImages={renderImages} />)
+    const { rerender, container } = render(<ProcessBody state={processState(segments)} renderFactorySlot={imageSlot(renderImages)} loadImage={loadImage} />)
     const group = screen.getByRole('button', { name: /Reading README.md/ })
     fireEvent.click(group)
     const child = within(container.querySelector<HTMLElement>('[data-codex-activity]')!).getByRole('button')
@@ -202,7 +208,7 @@ describe('ProcessBody', () => {
     const completed = processState([segments[0], tool('read', { ...reading('completed'), output: 'README result' }), answer], {
       status: 'completed', endedAt: startedAt + 6000,
     })
-    rerender(<ProcessBody state={completed} renderMessageImages={renderImages} />)
+    rerender(<ProcessBody state={completed} renderFactorySlot={imageSlot(renderImages)} loadImage={loadImage} />)
     const toggle = screen.getByRole('button', { name: 'Worked for 6s' })
     expect(toggle.getAttribute('aria-expanded')).toBe('false')
     expect(container.querySelector('[data-codex-process-content]')?.hasAttribute('hidden')).toBe(true)
@@ -219,35 +225,35 @@ describe('ProcessBody', () => {
 
   it('honors a user-expanded process when the final answer arrives', () => {
     const state = processState([tool('run')])
-    const { rerender } = render(<ProcessBody state={state} renderMessageImages={renderImages} />)
+    const { rerender } = render(<ProcessBody state={state} renderFactorySlot={imageSlot(renderImages)} loadImage={loadImage} />)
     const toggle = screen.getByRole('button', { name: 'Working for 4s' })
     fireEvent.click(toggle)
     fireEvent.click(toggle)
     rerender(<ProcessBody state={{ ...state, status: 'completed', endedAt: startedAt + 4000,
       segments: [...state.segments, { ...prose('answer', 'Done.'), phase: 'final_answer' }],
-    }} renderMessageImages={renderImages} />)
+    }} renderFactorySlot={imageSlot(renderImages)} loadImage={loadImage} />)
     expect(screen.getByRole('button', { name: 'Worked for 4s' }).getAttribute('aria-expanded')).toBe('true')
     expect(screen.getByRole('button', { name: 'Ran a command' })).not.toBeNull()
   })
 
   it('does not guess a final answer from running commentary or hide answer-only turns', () => {
     const text = prose('text', 'Checking the files.')
-    const { rerender, container } = render(<ProcessBody state={processState([text])} renderMessageImages={renderImages} />)
+    const { rerender, container } = render(<ProcessBody state={processState([text])} renderFactorySlot={imageSlot(renderImages)} loadImage={loadImage} />)
     expect(container.querySelector('[data-codex-final-answer]')).toBeNull()
     expect(screen.getByRole('button', { name: 'Working for 4s' }).getAttribute('aria-expanded')).toBe('true')
-    rerender(<ProcessBody state={processState([{ ...text, phase: 'final_answer' }], { status: 'completed' })} renderMessageImages={renderImages} />)
+    rerender(<ProcessBody state={processState([{ ...text, phase: 'final_answer' }], { status: 'completed' })} renderFactorySlot={imageSlot(renderImages)} loadImage={loadImage} />)
     expect(screen.queryByRole('button')).toBeNull()
     expect(screen.getByText(text.text!).closest('[data-codex-final-answer]')).not.toBeNull()
   })
 
   it('renders image attachments through the supplied renderer, including after the final answer', () => {
     const image = attachment()
-    const renderer = vi.fn<React.ComponentProps<typeof ProcessBody>['renderMessageImages']>(() => <img alt="Rendered attachment" />)
+    const renderer = vi.fn(() => <img alt="Rendered attachment" />)
     const state = processState([
       tool('run'), { ...prose('answer', 'Here is the image.'), phase: 'final_answer' },
       { key: 'image', seq: 3, step: 0, kind: 'image', attachment: image },
     ], { status: 'completed' })
-    render(<ProcessBody state={state} renderMessageImages={renderer} />)
+    render(<ProcessBody state={state} renderFactorySlot={imageSlot(renderer)} loadImage={loadImage} />)
     expect(renderer).toHaveBeenCalledWith({ images: [{ attachment: image }], align: 'start' })
     expect(renderer.mock.calls[0][0].images[0].attachment).toBe(image)
     expect(screen.getByRole('img', { name: 'Rendered attachment' }).closest('[data-codex-final-answer]')).not.toBeNull()
@@ -255,13 +261,13 @@ describe('ProcessBody', () => {
 
   it('keeps images emitted before final text visible through collapse and reopening', () => {
     const image = attachment()
-    const renderer = vi.fn<React.ComponentProps<typeof ProcessBody>['renderMessageImages']>(() => <img alt="Generated deliverable" />)
+    const renderer = vi.fn(() => <img alt="Generated deliverable" />)
     const state = processState([
       tool('generate', { type: 'imageGeneration', title: 'Generated an image', status: 'completed' }),
       { key: 'image', seq: 2, step: 0, kind: 'image', attachment: image },
       { ...prose('answer', 'Here is your image.'), phase: 'final_answer' },
     ], { status: 'completed', endedAt: startedAt + 4000 })
-    const { container } = render(<ProcessBody state={state} renderMessageImages={renderer} />)
+    const { container } = render(<ProcessBody state={state} renderFactorySlot={imageSlot(renderer)} loadImage={loadImage} />)
     const toggle = screen.getByRole('button', { name: 'Worked for 4s' })
     const visibleImage = screen.getByRole('img', { name: 'Generated deliverable' })
     expect(toggle.getAttribute('aria-expanded')).toBe('false')
@@ -285,11 +291,11 @@ describe('ProcessBody', () => {
   it('does not auto-collapse ongoing work when an image arrives before final prose', () => {
     const initial = processState([tool('generate', command('running'))])
     const renderer = () => <img alt="Live deliverable" />
-    const { rerender, container } = render(<ProcessBody state={initial} renderMessageImages={renderer} />)
+    const { rerender, container } = render(<ProcessBody state={initial} renderFactorySlot={imageSlot(renderer)} loadImage={loadImage} />)
     const withImage = { ...initial, segments: [...initial.segments,
       { key: 'image', seq: 2, step: 0, kind: 'image' as const, attachment: attachment() },
     ] }
-    rerender(<ProcessBody state={withImage} renderMessageImages={renderer} />)
+    rerender(<ProcessBody state={withImage} renderFactorySlot={imageSlot(renderer)} loadImage={loadImage} />)
     const toggle = screen.getByRole('button', { name: 'Working for 4s' })
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
     expect(container.querySelector('[data-codex-process-content]')?.hasAttribute('hidden')).toBe(false)
@@ -297,7 +303,7 @@ describe('ProcessBody', () => {
     expect(screen.getByRole('img', { name: 'Live deliverable' }).closest('[hidden]')).toBeNull()
     rerender(<ProcessBody state={{ ...withImage, segments: [...withImage.segments,
       { ...prose('answer', 'Finishing the result.'), phase: 'final_answer', settled: false },
-    ] }} renderMessageImages={renderer} />)
+    ] }} renderFactorySlot={imageSlot(renderer)} loadImage={loadImage} />)
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
     fireEvent.click(toggle)
     expect(toggle.getAttribute('aria-expanded')).toBe('false')
@@ -311,7 +317,7 @@ describe('ProcessBody', () => {
       prose('after-image', 'I will check the generated image.'),
       tool('after', command('running')),
     ])
-    const { container } = render(<ProcessBody state={state} renderMessageImages={() => <img alt="In-order deliverable" />} />)
+    const { container } = render(<ProcessBody state={state} renderFactorySlot={imageSlot(() => <img alt="In-order deliverable" />)} loadImage={loadImage} />)
     const order = [...container.querySelectorAll('[data-codex-activity-group], img, [data-codex-commentary]')]
       .map(element => element.tagName === 'IMG' ? 'image'
         : element.hasAttribute('data-codex-commentary') ? 'commentary' : 'activity')
@@ -320,7 +326,7 @@ describe('ProcessBody', () => {
 
   it('shows a stopped process and the supplied error without presenting success', () => {
     const state = processState([tool('failed', command('error'))], { status: 'error', endedAt: startedAt + 3000, error: 'Permission denied.' })
-    const { container } = render(<ProcessBody state={state} renderMessageImages={renderImages} />)
+    const { container } = render(<ProcessBody state={state} renderFactorySlot={imageSlot(renderImages)} loadImage={loadImage} />)
     expect(screen.getByRole('button', { name: 'Stopped for 3s' }).getAttribute('aria-expanded')).toBe('true')
     expect(screen.getByRole('status').textContent).toBe('Permission denied.')
     expect(container.querySelector('[data-codex-process-turn]')?.getAttribute('data-status')).toBe('error')
@@ -330,15 +336,15 @@ describe('ProcessBody', () => {
 
   it('streams only unsettled running markdown and stops its elapsed timer when settled', () => {
     const state = processState([{ ...prose('text', 'Checking'), settled: false }])
-    const { rerender } = render(<ProcessBody state={state} renderMessageImages={renderImages} />)
+    const { rerender } = render(<ProcessBody state={state} renderFactorySlot={imageSlot(renderImages)} loadImage={loadImage} />)
     expect(screen.getByTestId('markdown').getAttribute('data-streaming')).toBe('true')
     act(() => { vi.advanceTimersByTime(2000) })
     expect(screen.getByRole('button', { name: 'Working for 6s' })).not.toBeNull()
-    rerender(<ProcessBody state={{ ...state, segments: [{ ...state.segments[0], settled: true }] }} renderMessageImages={renderImages} />)
+    rerender(<ProcessBody state={{ ...state, segments: [{ ...state.segments[0], settled: true }] }} renderFactorySlot={imageSlot(renderImages)} loadImage={loadImage} />)
     expect(screen.getByTestId('markdown').getAttribute('data-streaming')).toBe('false')
     rerender(<ProcessBody state={{ ...state, status: 'completed', endedAt: startedAt + 6000,
       presentations: { 0: { version: 1, blocks: [] } },
-    }} renderMessageImages={renderImages} />)
+    }} renderFactorySlot={imageSlot(renderImages)} loadImage={loadImage} />)
     expect(screen.getByTestId('markdown').getAttribute('data-streaming')).toBe('false')
     expect(vi.getTimerCount()).toBe(0)
     act(() => { vi.advanceTimersByTime(10000) })
@@ -361,7 +367,7 @@ describe('CodexProcessView file mentions', () => {
     const useTurnData = vi.fn(() => tail)
     const props = {
       node: { data: state, location: { kind, turn } }, sessionId: `file-mentions-${kind}`,
-      renderMessageImages: renderImages, openFile, fileMentions, useTurnData, useChat: useEmptySession,
+      renderFactorySlot: imageSlot(renderImages), loadImage, openFile, fileMentions, useTurnData, useChat: useEmptySession,
     } as unknown as React.ComponentProps<typeof CodexProcessView>
     const { rerender } = render(<CodexProcessView {...props} />)
     expect(useTurnData).toHaveBeenCalledWith('turn-tail')
@@ -385,7 +391,7 @@ describe('CodexProcessView file mentions', () => {
     const useTurnData = () => tail
     const makeProps = (location: unknown) => ({
       node: { data: state, location }, sessionId: 'file-mentions-lifecycle',
-      renderMessageImages: renderImages, openFile, fileMentions, useTurnData, useChat: useEmptySession,
+      renderFactorySlot: imageSlot(renderImages), loadImage, openFile, fileMentions, useTurnData, useChat: useEmptySession,
     } as unknown as React.ComponentProps<typeof CodexProcessView>)
     const { rerender } = render(<CodexProcessView {...makeProps({ kind: 'turn', turn: { status: 'running' } })} />)
     expect(fileMentions).not.toHaveBeenCalled()
@@ -421,7 +427,7 @@ describe('CodexProcessView readiness', () => {
     } as ToolCallViewProps
     const node = { data: state, location: { kind: 'turn', turn: { status: 'running' } } } as unknown as React.ComponentProps<typeof CodexProcessView>['node']
     const processProps: Partial<React.ComponentProps<typeof CodexProcessView>> = {
-      node, sessionId: props.sessionId, renderMessageImages: renderImages,
+      node, sessionId: props.sessionId, renderFactorySlot: imageSlot(renderImages), loadImage,
       openFile: vi.fn(), inspectCall: vi.fn(), forkAt: vi.fn(), fileMentions: () => undefined,
       useTurnData: () => undefined, useChat: useEmptySession,
     }
@@ -486,10 +492,10 @@ describe('CodexProcessView readiness', () => {
     const tree = (fail: boolean, boundaryKey = 'first') => <>
       <GroupedCodexToolActivityView {...nativeProps} />
       <ProcessErrorBoundary key={boundaryKey} onError={caught}>
-        <CodexProcessView {...processProps} renderMessageImages={() => {
+        <CodexProcessView {...processProps} renderFactorySlot={imageSlot(() => {
           if (fail) throw failure
           return <img alt="Replacement image" />
-        }} />
+        })} loadImage={loadImage} />
       </ProcessErrorBoundary>
     </>
     const { rerender, container } = render(tree(!previouslyMounted))
@@ -566,7 +572,7 @@ function renderLegacyBoundaryFixture(generation: string = 'current') {
   } as ToolCallViewProps
   const processProps = {
     node: { data: state, location: { kind: 'turn', turn: { status: 'closed' } } },
-    sessionId: nativeProps.sessionId, renderMessageImages: renderImages,
+    sessionId: nativeProps.sessionId, renderFactorySlot: imageSlot(renderImages), loadImage,
     ...hooks, useTurnData: () => undefined, fileMentions: () => undefined,
   } as unknown as React.ComponentProps<typeof CodexProcessView>
   const result = render(<>

@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 
 import {
   freezeMessage,
+  createToolResultMessage,
   MessageId,
 } from "@deepseek-ai/dsh-llm";
 import {
@@ -573,15 +574,8 @@ function appendProjectedTurn(append, sourceTurn, turn) {
         turn,
         step,
         message: freezeMessage({
+          ...createToolResultMessage({ callId, content: entry.resultContent, isError: entry.isError }),
           id: MessageId(entry.resultId),
-          role: "user",
-          content: [{
-            type: "tool-result",
-            toolCallId: callId,
-            content: entry.resultContent,
-            isError: entry.isError,
-          }],
-          source: { kind: "tool", callId },
         }),
         ...(entry.error ? { error: entry.error } : {}),
         ...(entry.meta ? { meta: entry.meta } : {}),
@@ -811,10 +805,13 @@ function codexActivityRebuildReason(session, turns) {
     if (call.name !== entry.toolName || call.arguments !== entry.arguments) {
       return "codex-activity-call-drift";
     }
-    const block = result.message?.content?.[0];
-    if (block?.type !== "tool-result"
-      || block.isError !== entry.isError
-      || jsonText(block.content) !== jsonText(entry.resultContent)
+    const message = result.message;
+    const legacy = message?.content?.[0];
+    const content = message?.role === "tool" ? message.content : legacy?.type === "tool-result" ? legacy.content : undefined;
+    const isError = message?.role === "tool" ? message.isError : legacy?.isError;
+    if (content === undefined
+      || isError !== entry.isError
+      || jsonText(content) !== jsonText(entry.resultContent)
       || jsonText(result.meta) !== jsonText(entry.meta)) {
       return "codex-activity-result-drift";
     }

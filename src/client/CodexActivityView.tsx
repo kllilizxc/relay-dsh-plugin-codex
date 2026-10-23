@@ -59,7 +59,7 @@ export function CodexToolActivityView({ block }: ToolCallViewProps) {
     ? readActivityPayload((block.meta as Record<string, unknown>).codexActivity)
     : null
   if (payload === null) {
-    const args = 'kind' in block ? block.call?.argsRaw : block.argsRaw
+    const args = 'kind' in block ? block.call?.argsRaw : 'argsRaw' in block ? block.argsRaw : undefined
     try { payload = readActivityPayload(JSON.parse(args ?? 'null')) } catch { /* Malformed history uses a safe fallback. */ }
   }
   const activity: CodexActivityData = payload === null

@@ -1,20 +1,20 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   Button,
-  IconCodeOutline16,
   Modal,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
   InjectFace,
   PropsLocale,
+  PropsRuntime,
 } from '@deepseek-ai/dsh-client-ui-slots'
-import type { SessionImportProviderOwnerProps } from 'relay-dsh-plugin-session-import/contracts'
 import { resolveImportWorkspace } from './workspace-import-client.mjs'
 import {
   workspaceImportUpdatedAtDate,
   workspaceImportUiPolicy,
   type WorkspaceImportUiAction,
 } from './workspace-import-ui-policy.mjs'
+import {Code2} from 'lucide-react'
 import css from './WorkspaceImportAction.module.css'
 
 interface WorkspaceView {
@@ -22,15 +22,6 @@ interface WorkspaceView {
   title: string
   path: string
   sessionIds: readonly string[]
-}
-
-interface WorkspaceState {
-  items: readonly WorkspaceView[]
-  recentWorkspaceId?: string
-}
-
-interface SessionState {
-  current?: string
 }
 
 interface Summary {
@@ -61,16 +52,7 @@ interface Progress extends ImportResult {
   total: number
 }
 
-interface Observable<T> {
-  getSnapshot: () => T
-  subscribe: (listener: () => void) => () => void
-}
-
 export interface WorkspaceImportInjected {
-  hooks: {
-    workspaceImportWorkspaces: Observable<WorkspaceState>
-    workspaceImportSessions: Observable<SessionState>
-  }
   scanWorkspace: (cwd: string) => Promise<{
     workspace: { title: string; path: string }
     summary: Summary
@@ -84,7 +66,7 @@ export interface WorkspaceImportInjected {
   refreshWorkspaceState: () => Promise<void>
 }
 
-type Props = SessionImportProviderOwnerProps
+type Props = PropsRuntime<'relay.session-import.provider'>
   & InjectFace<WorkspaceImportInjected>
   & PropsLocale<'relay.codex'>
 
@@ -92,16 +74,16 @@ type Phase = 'idle' | 'no-workspace' | 'select-workspace' | 'scanning' | 'summar
 
 export function WorkspaceImportProvider({
   registerProvider,
-  useWorkspaceImportWorkspaces,
-  useWorkspaceImportSessions,
+  useWorkspaces,
+  useSessions,
   scanWorkspace,
   importWorkspace,
   refreshWorkspaceState,
   t,
 }: Props): ReactNode {
-  const workspaces = useWorkspaceImportWorkspaces((value: WorkspaceState) => value)
-  const sessions = useWorkspaceImportSessions((value: SessionState) => value)
-  const availableTarget = resolveImportWorkspace(workspaces, sessions) as WorkspaceView | null
+  const workspaces = useWorkspaces(value => value)
+  const current = useSessions(value => Object.values(value.byId).find(session => (session.retainedBy.mainView ?? 0) > 0)?.id)
+  const availableTarget = resolveImportWorkspace(workspaces, { current }) as WorkspaceView | null
   const [open, setOpen] = useState(false)
   const [target, setTarget] = useState<WorkspaceView | null>(null)
   const [phase, setPhase] = useState<Phase>('idle')
@@ -158,7 +140,7 @@ export function WorkspaceImportProvider({
   useEffect(() => registerProvider({
     id: 'codex',
     label: t('importAction'),
-    icon: <IconCodeOutline16 size={16} />,
+    icon: <Code2 size={16} />,
     order: 10,
     open: begin,
   }), [begin, registerProvider, t])

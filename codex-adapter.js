@@ -2,7 +2,7 @@ import { sessionEvents, toolCallId as ToolCallId } from "./dsh-compat.mjs";
 import { homedir } from "node:os";
 import { basename, resolve } from "node:path";
 
-import { createMessage, LlmAdapter, LlmError } from "@deepseek-ai/dsh-llm";
+import { createMessage, createToolResultMessage, LlmAdapter, LlmError, projectFilesToText } from "@deepseek-ai/dsh-llm";
 import { CODEX_ACTIVITY_TOOL } from "./codex-activity-wire.mjs";
 
 import { importCodexGeneratedImage, importCodexImage, importCodexMcpImage } from "./codex-image.js";
@@ -740,6 +740,7 @@ export class CodexDshAdapter extends LlmAdapter {
       approvalPolicy: "never",
       cwd,
       dynamicTools: [],
+      toolFree: true,
       baseInstructions: options.system,
       developerInstructions: auxiliaryInstructions(purpose),
       ephemeral: true,
@@ -962,14 +963,10 @@ export class CodexDshAdapter extends LlmAdapter {
       const callId = ToolCallId(`relay-codex:${JSON.stringify([threadId, turnId, id])}`);
       agent.session.append("tool/result", {
         ...state.location,
-        message: createMessage({
-          role: "user",
-          source: { kind: "tool", callId },
-          content: [{
-            type: "tool-result", toolCallId: callId,
-            content: [{ type: "text", text: payload.activity.output ?? payload.activity.title }],
-            isError: payload.activity.status === "error",
-          }],
+        message: createToolResultMessage({
+          callId,
+          content: [{ type: "text", text: payload.activity.output ?? payload.activity.title }],
+          isError: payload.activity.status === "error",
         }),
         meta: { codexActivity: payload },
       }, { surfaceOp: "append" });
@@ -1410,13 +1407,16 @@ async function latestUserInput(messages, attachments, signal) {
     const message = messages[index];
     if (message?.role !== "user") continue;
     if (message.source?.kind !== "user" && !isRelayActivation(message.source)) continue;
-    const text = (message.content ?? [])
+    // Relay's stream hook bypasses DSH's final file projection. Codex runs on
+    // the host, so its selected input uses the attachment store's host paths.
+    const content = projectFilesToText([message], ref => attachments?.fileHostPath?.(ref))[0].content ?? [];
+    const text = content
       .filter((block) => block.type === "text")
       .map((block) => block.text)
       .join("\n")
       .trim();
     const localImages = [];
-    for (const block of message.content ?? []) {
+    for (const block of content) {
       const image = await localImage(block, attachments, signal);
       if (image) localImages.push(image);
     }

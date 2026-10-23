@@ -8,7 +8,7 @@ import test from "node:test";
 import { BlockAssembler, createMessage } from "@deepseek-ai/dsh-llm";
 import { Context } from "@deepseek-ai/cordis";
 import SessionStore, { KNOWN_SESSION_EVENT_TYPES, Session, SessionId } from "@deepseek-ai/dsh-session";
-import JsonlSessionPersistence from "@deepseek-ai/dsh-session-persistence-jsonl";
+import * as JsonlSessionPersistence from "@deepseek-ai/dsh-session-persistence-jsonl";
 import { CODEX_ACTIVITY_TOOL } from "../codex-activity-wire.mjs";
 import { loadPersistedSession, sessionEvents, writePersistedSession } from "../dsh-compat.mjs";
 
@@ -169,7 +169,7 @@ test("dynamic tool results retain their text, identity and failure in persisted 
     assert.equal(activity.output, text);
     assert.equal(activity.title, "dsh / plugin_discover");
     assert.equal(activity.status, success ? "completed" : "error");
-    const result = agent.appended.findLast(event => event.type === "tool/result").data.message.content[0];
+    const result = agent.appended.findLast(event => event.type === "tool/result").data.message;
     assert.equal(result.content[0].text, text);
     assert.equal(result.isError, !success);
     assert.equal(chunks.filter(chunk => chunk.type === "text-delta").some(chunk => chunk.text.includes(text)), false);
@@ -266,8 +266,8 @@ for (const compression of ["none", "zstd"]) {
       const agent = { id, ctx: {}, session: Session.create(id, [], {
         ...Session.create(id).header, cwd: root, agentPreset: "relay-codex",
       }) };
-      agent.session.append("turn/start", { turn: 3 });
-      agent.session.append("step/start", { turn: 3, step: 2 });
+      agent.session.append("turn/start", { turn: 1 });
+      agent.session.append("step/start", { turn: 1, step: 1 });
       const adapter = new CodexDshAdapter({ runtime: new FakeRuntime(), ready: Promise.resolve() });
       adapter.attachAgent(agent);
       const chunks = await collect(adapter.stream({
@@ -277,13 +277,13 @@ for (const compression of ["none", "zstd"]) {
       const assembler = new BlockAssembler();
       for (const chunk of chunks) assembler.push(chunk);
       agent.session.append("assistant/message", {
-        turn: 3, step: 2, stream: [], message: createMessage({
+        turn: 1, step: 1, stream: [], message: createMessage({
           role: "assistant", source: { kind: "model", provider: "relay-codex", model: "codex-test" },
           content: assembler.message().content,
         }),
       }, { surfaceOp: "append" });
-      agent.session.append("step/end", { turn: 3, step: 2 });
-      agent.session.append("turn/end", { turn: 3, reason: { kind: "completed" } });
+      agent.session.append("step/end", { turn: 1, step: 1 });
+      agent.session.append("turn/end", { turn: 1, reason: { kind: "completed" } });
       const writer = await mount();
       await writePersistedSession(writer.sessionPersistence, agent.session.header, sessionEvents(agent.session));
       await writer.fiber.dispose();
@@ -295,8 +295,8 @@ for (const compression of ["none", "zstd"]) {
         const call = loaded.events.find(event => event.type === "tool/call");
         const result = loaded.events.find(event => event.type === "tool/result");
         assert.equal(call.data.name, CODEX_ACTIVITY_TOOL);
-        assert.equal(call.data.turn, 3);
-        assert.equal(call.data.step, 2);
+        assert.equal(call.data.turn, 1);
+        assert.equal(call.data.step, 1);
         assert.equal(result.data.meta.codexActivity.activity.output, "ok\n");
         assert.equal(result.data.message.source.callId, call.data.callId);
         const restored = Session.fromRestore(id, loaded.events, loaded.meta, loaded.inheritedEventCount ?? 0);
@@ -545,7 +545,7 @@ for (const { name, processId, raw, native, expected } of [
     assert.equal(events[1].activity.exitCode, undefined);
     assert.deepEqual([events[1].threadId, events[1].turnId, events[1].itemId], ["thread-1", "turn-buffered-cancel", "buffered-command"]);
     assert.deepEqual([result[0].data.turn, result[0].data.step], [3, 2]);
-    const block = result[0].data.message.content[0];
+    const block = result[0].data.message;
     assert.equal(block.isError, true);
     assert.deepEqual(block.content, [{ type: "text", text: expected }]);
     assert.equal(block.toolCallId, agent.appended.find(event => event.type === "tool/call").data.callId);
@@ -1572,7 +1572,7 @@ test("the original JPEG-as-.png Session history replays without failing the DSH 
       },
     },
   });
-  const agent = fakeAgent({ id: "session-fixture" });
+  const agent = fakeAgent({ id: "session-6f78fa6a-bc1d-4be9-b15b-264d5f743c05" });
   agent.session.header.cwd = directory;
   adapter.attachAgent(agent);
 
@@ -2917,4 +2917,103 @@ test("standalone inference releases failures and does not start cancelled work",
   assert.equal(runtime.createdConfigs.length,0);
   await assert.rejects(collect(adapter.stream(options)),/transport offline/);
   assert.deepEqual(runtime.released,['thread-1']);
+});
+
+test("file attachments survive the native Relay stream hook as readable ZIP handles", async (context) => {
+  const { LlmRuntime, createUserMessage } = await import("@deepseek-ai/dsh-llm");
+  const { createDshCodexPlugin } = await import("../dsh-plugin.js");
+  const { createHash } = await import("node:crypto");
+  const zip = Buffer.from("UEsDBBQAAAAAAKFoSF3Jh0kVFwAAABcAAAAKAAAAbWFya2VyLnR4dFdPUktBX1pJUF9BVFRBQ0hNRU5UX09LUEsBAhQDFAAAAAAAoWhIXcmHSRUXAAAAFwAAAAoAAAAAAAAAAAAAAIABAAAAAG1hcmtlci50eHRQSwUGAAAAAAEAAQA4AAAAPwAAAAAA", "base64");
+  const directory = await mkdtemp(join(tmpdir(), "relay-codex-zip-"));
+  const path = join(directory, 'uploaded "materials".zip');
+  const ctx = new Context();
+  const cleanups = [];
+  context.after(async () => {
+    for (const cleanup of cleanups.reverse()) await cleanup();
+    await ctx.fiber.dispose();
+    await rm(directory, { recursive: true, force: true });
+  });
+  await writeFile(path, zip);
+  const file = { attachmentId: `sha256:${createHash("sha256").update(zip).digest("hex")}`, name: "materials.zip", bytes: zip.length };
+  const mapped = [];
+  ctx.provide("attachments", { fileHostPath(ref) {
+    assert.deepEqual(ref, file);
+    mapped.push(ref.attachmentId);
+    return path;
+  }, async readImage() { throw new Error("A ZIP must not be read as an image"); } });
+  const agent = fakeAgent({ cwd: directory });
+  agent.ctx = ctx;
+  ctx.provide("agents", { get: id => id === agent.id ? agent : undefined, list: () => [agent] });
+  ctx.provide("webServer", { register: () => () => {} });
+  ctx.provide("typert", { lookups: new Map([["agent", { resolve: async () => agent }]]) });
+  ctx.provide("workspaceRegistry", {});
+  new LlmRuntime(ctx);
+  const runtime = new FakeRuntime();
+  runtime.status = () => ({ state: "connected" });
+  runtime.listWorkspaceThreads = async () => [];
+  runtime.whenReady = () => Promise.resolve();
+  runtime.subscribeRequest = () => () => {};
+  await createDshCodexPlugin(ctx, { codexLinkPath: join(directory, "links.json") }).activate({
+    capabilities: { require: () => runtime, optional: () => undefined },
+    defer: cleanup => { cleanups.push(cleanup); return cleanup; },
+  });
+  assert.equal(ctx.get("fs"), undefined, "Codex's empty presentation preset has no DSH filesystem");
+  for (const content of [
+    [{ type: "text", text: "Read the attached ZIP" }, { type: "file", attachment: file }],
+    [{ type: "file", attachment: file }],
+  ]) {
+    const message = createUserMessage({ source: { kind: "user" }, content });
+    const before = JSON.stringify(message);
+    await collect(ctx.llm.stream({ provider: "relay-codex", model: "codex-test", sessionId: agent.id, messages: [message] }));
+    const sent = runtime.sent.at(-1).message;
+    assert.ok(sent.text.includes(JSON.stringify(path)), "Codex must receive the host path, including escaped quotes");
+    assert.match(sent.text, /verbatim read-only copy saved at/);
+    assert.match(sent.text, /Read that path with your file tools/);
+    assert.deepEqual(sent.localImages, []);
+    const handle = sent.text.match(/copy saved at ("[^\n]+?")\. Read/);
+    assert.ok(handle);
+    assert.deepEqual(await readFile(JSON.parse(handle[1])), zip);
+    assert.equal(JSON.stringify(message), before, "Provider projection must preserve durable references");
+  }
+  assert.equal(runtime.sent.length, 2);
+  assert.deepEqual(mapped, [file.attachmentId, file.attachmentId]);
+});
+
+test("file attachments preserve content order without reading historical files", async () => {
+  const mapped = [];
+  const adapter = new CodexDshAdapter({ runtime: new FakeRuntime(), ready: Promise.resolve(), attachments: {
+    fileHostPath(ref) { mapped.push(ref.name); return `/attachments/${ref.name}`; },
+  } });
+  const agent = fakeAgent();
+  adapter.attachAgent(agent);
+  const file = name => ({ type: "file", attachment: { attachmentId: `sha256:${"0".repeat(64)}`, name, bytes: 1 } });
+  const content = [{ type: "text", text: "FIRST" }, file("one.zip"), { type: "text", text: "SECOND" }, file("two.txt")];
+  const before = JSON.stringify(content);
+  await collect(adapter.stream({ provider: "relay-codex", model: "codex-test", sessionId: agent.id, messages: [
+    { role: "user", source: { kind: "user" }, content: [file("historical.zip")] },
+    { role: "user", source: { kind: "user" }, content },
+  ] }));
+  const text = adapter.runtime.sent[0].message.text;
+  assert.ok(text.indexOf("FIRST") < text.indexOf("one.zip"));
+  assert.ok(text.indexOf("one.zip") < text.indexOf("SECOND"));
+  assert.ok(text.indexOf("SECOND") < text.indexOf("two.txt"));
+  assert.deepEqual(mapped, ["one.zip", "two.txt"]);
+  assert.equal(JSON.stringify(content), before);
+});
+
+test("file attachments without a host path report their limitation instead of disappearing", async () => {
+  for (const attachments of [null, { fileHostPath: () => undefined }]) {
+    const runtime = new FakeRuntime();
+    const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve(), attachments });
+    const agent = fakeAgent();
+    adapter.attachAgent(agent);
+    await collect(adapter.stream({ provider: "relay-codex", model: "codex-test", sessionId: agent.id, messages: [
+      { role: "user", source: { kind: "user" }, content: [
+        { type: "file", attachment: { attachmentId: `sha256:${"0".repeat(64)}`, name: "unavailable.zip", bytes: 1 } },
+      ] },
+    ] }));
+    assert.match(runtime.sent[0].message.text, /unavailable\.zip/);
+    assert.match(runtime.sent[0].message.text, /cannot access a readable path/);
+    assert.match(runtime.sent[0].message.text, /do not claim to have read it/);
+  }
 });

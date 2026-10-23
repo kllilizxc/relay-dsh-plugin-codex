@@ -103,8 +103,8 @@ function renderAction({
       provider.current = descriptor
       return registerProvider?.(descriptor) ?? (() => { provider.current = null })
     }}
-    useWorkspaceImportWorkspaces={selector => selector(workspaceState as never)}
-    useWorkspaceImportSessions={selector => selector(sessionState as never)}
+    useWorkspaces={selector => selector(workspaceState as never)}
+    useSessions={selector => selector({ byId: sessionState.current ? { [sessionState.current]: { id: sessionState.current, retainedBy: { mainView: 1 } } } : {} } as never)}
     scanWorkspace={scanWorkspace as never}
     importWorkspace={vi.fn() as never}
     refreshWorkspaceState={vi.fn() as never}

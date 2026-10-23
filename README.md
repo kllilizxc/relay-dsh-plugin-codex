@@ -11,6 +11,7 @@ This repository is a source fork of the MIT-licensed Relay Codex plugin at versi
 - Text-only, tool-free calls without a DSH session use an ephemeral Codex thread and release it after completion or failure.
 - Switching between Codex providers preserves an explicitly selected model when that model is available.
 - In a Codex session, `/` can list native Codex skills for that session's workspace. Selecting a skill inserts a native `$skill` reference; duplicate names use a path-qualified reference.
+- Adapted to DSH `0.2.1-rc.2` and React 19: native plugin `Config` for the Codex runtime setting, tool-role activity results, and durable file attachments forwarded to Codex as readable host paths. Peer ranges pin these versions.
 
 ## Install from GitHub
 
@@ -25,7 +26,7 @@ This repository is a source fork of the MIT-licensed Relay Codex plugin at versi
 
 4. Open **New Session**, choose a workspace, and select **Codex**.
 
-The native skill menu requires a DSH build with the `inputTriggers` client service and session query service. Compatibility with every DSH version in the package's peer dependency range has not been verified for this fork.
+This fork targets DSH `0.2.1-rc.2` with React 19, pinned by the peer dependency ranges. The native skill menu requires a DSH build with the `inputTriggers` client service and session query service. Opening absolute file paths from final answers as buttons requires a DSH frontend whose `MarkdownText` supports path links; on stock DSH `0.2.1-rc.2` those links render as plain anchors.
 
 ## Development
 

@@ -2,7 +2,7 @@ import { Fragment, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { ChevronRight, ChevronDown, LoaderCircle, Brain, TriangleAlert } from 'lucide-react'
 import { MarkdownText, DisclosureRow } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ChatNodeOwnerProps, TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-chat/client'
-import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { PropsRuntime, PropsRenderFactories } from '@deepseek-ai/dsh-client-ui-slots'
 import { describeActivity, summarizeActivities } from '../../codex-activity-labels.mjs'
 import { ActivityIcon, ActivityRow } from './CodexActivityView.tsx'
 import { canTakeOverCodexProcess, codexProcessAnswerSegments, type CodexProcessSegment, type CodexProcessState } from './codex-process.ts'
@@ -11,7 +11,7 @@ import { codexProducedFileMentions } from './process-files.ts'
 import css from './CodexProcessView.module.css'
 import { useCompatibleChat } from './compatible-chat.ts'
 
-type ProcessProps = PropsRuntime<'conversation.chat.node', 'relay-codex-process'>
+type ProcessProps = PropsRuntime<'conversation.chat.node', 'relay-codex-process'> & PropsRenderFactories
 type Item = { key: string; activities: CodexProcessSegment[] } | CodexProcessSegment
 const markdownLabels = { code: { copyLabel: 'Copy', copiedLabel: 'Copied' }, footnotes: 'Footnotes' }
 const compatibleMarkdownLabels = { labels: markdownLabels, codeLabels: markdownLabels.code }
@@ -32,7 +32,7 @@ export function groupProcessSegments(segments: readonly CodexProcessSegment[]): 
   return items
 }
 
-export function CodexProcessView({ node, sessionId, renderMessageImages, useTurnData, useChat, useSession, openFile, fileMentions, turnProcess }: CompatibleProcessProps) {
+export function CodexProcessView({ node, sessionId, renderFactorySlot, useTurnData, useChat, useSession, openFile, loadImage, fileMentions, turnProcess }: CompatibleProcessProps) {
   // Legacy activity has no numeric turn in its payload. Its visible anchor still
   // proves an intervening native row; do not move grouped prose across that row.
   const legacyBoundary = useCompatibleChat({ useChat, useSession }, snapshot => [...snapshot.nodes.values()].some(candidate =>
@@ -49,14 +49,16 @@ export function CodexProcessView({ node, sessionId, renderMessageImages, useTurn
     const owner: TurnTailOwnerProps = { turn, seq: tail.closing.finalNode.seq, openFile }
     return codexProducedFileMentions(node.data.segments, openFile, fileMentions(owner))
   }, [turn, tail, node.data.segments, openFile, fileMentions])
-  return safe ? <ProcessBody state={node.data} renderMessageImages={renderMessageImages} fileMentions={mentions} />
+  return safe ? <ProcessBody state={node.data} renderFactorySlot={renderFactorySlot} loadImage={loadImage} fileMentions={mentions} openFile={openFile} />
     : <span hidden data-codex-process-fallback />
 }
 
-export function ProcessBody({ state, renderMessageImages, fileMentions }: {
+export function ProcessBody({ state, renderFactorySlot, loadImage, fileMentions, openFile }: {
   state: CodexProcessState
-  renderMessageImages: ChatNodeOwnerProps['renderMessageImages']
+  renderFactorySlot: PropsRenderFactories['renderFactorySlot']
+  loadImage: ChatNodeOwnerProps['loadImage']
   fileMentions?: ReturnType<ChatNodeOwnerProps['fileMentions']>
+  openFile?: ChatNodeOwnerProps['openFile']
 }) {
   const [expanded, setExpanded] = useState<boolean | null>(null)
   const [now, setNow] = useState(Date.now())
@@ -87,21 +89,22 @@ export function ProcessBody({ state, renderMessageImages, fileMentions }: {
           {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
         </button>
         <div className={css.flow} hidden={!open} data-codex-process-content>
-          <ProcessItems segments={process} renderMessageImages={renderMessageImages} running={state.status === 'running'} showImages={open} />
+          <ProcessItems segments={process} renderFactorySlot={renderFactorySlot} loadImage={loadImage} running={state.status === 'running'} showImages={open} />
           <ReasoningSummary segments={process} />
           {state.error && <div className={css.error} role="status">{state.error}</div>}
         </div>
       </>}
       {visibleAnswer.length > 0 && <div className={css.answer} data-codex-final-answer>
-        <ProcessItems segments={visibleAnswer} renderMessageImages={renderMessageImages} running={state.status === 'running'} fileMentions={fileMentions} />
+        <ProcessItems segments={visibleAnswer} renderFactorySlot={renderFactorySlot} loadImage={loadImage} running={state.status === 'running'} fileMentions={fileMentions} />
       </div>}
     </section>
   )
 }
 
-function ProcessItems({ segments, renderMessageImages, running, fileMentions, showImages = true }: {
+function ProcessItems({ segments, renderFactorySlot, loadImage, running, fileMentions, showImages = true }: {
   segments: readonly CodexProcessSegment[]
-  renderMessageImages: ChatNodeOwnerProps['renderMessageImages']
+  renderFactorySlot: PropsRenderFactories['renderFactorySlot']
+  loadImage: ChatNodeOwnerProps['loadImage']
   running: boolean
   fileMentions?: ReturnType<ChatNodeOwnerProps['fileMentions']>
   showImages?: boolean
@@ -109,7 +112,7 @@ function ProcessItems({ segments, renderMessageImages, running, fileMentions, sh
   return groupProcessSegments(segments).map(item => 'activities' in item
     ? <ActivityGroup key={item.key} segments={item.activities} />
     : item.kind === 'image' && item.attachment
-      ? showImages ? <Fragment key={item.key}>{renderMessageImages({ images: [{ attachment: item.attachment }], align: 'start' })}</Fragment> : null
+      ? showImages ? <Fragment key={item.key}>{renderFactorySlot('conversation.images.content', { images: [{ attachment: item.attachment }], loadImage, align: 'start' })}</Fragment> : null
       : <div key={item.key} className={css.prose} data-codex-commentary={item.phase !== 'final_answer' || undefined}>
           <MarkdownText text={item.text ?? ''} streaming={running && !item.settled} {...compatibleMarkdownLabels} fileMentions={fileMentions} />
         </div>)

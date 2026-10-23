@@ -114,7 +114,7 @@ function modelHarness({
   codexReadyAfter = 0,
   selectFails = 0,
 }) {
-  let state = { current: "session-1", byId: { "session-1": { id: "session-1", blank, ...presetFields(preset) } } };
+  let state = { byId: { "session-1": { id: "session-1", blank, retainedBy: { mainView: 1 }, ...presetFields(preset) } } };
   let currentProvider = provider;
   let queries = 0;
   const listeners = new Set();
@@ -138,10 +138,11 @@ function modelHarness({
     async select(selection) {
       selections.push({ sessionId: "session-1", ...selection });
       if (selections.length <= selectFails) {
+        if (generation === 'current') return { ok: false, error: { code: 'MODELS_CHANGED', message: 'models changed' } };
         throw new Error("models changed");
       }
       currentProvider = selection.provider;
-      return;
+      return generation === 'current' ? { ok: true, value: undefined } : undefined;
     },
   };
   return {

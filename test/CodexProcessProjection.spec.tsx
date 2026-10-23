@@ -26,7 +26,8 @@ const { assistantDefinition } = await vi.importActual<{ assistantDefinition: Con
   '@deepseek-ai/dsh-client-ui-chat/src/client/conversation-nodes/assistant.ts',
 )
 
-// Native shapes from official DSH 0a15e36e7f82b6ed45af6fa9759f29b40dcd965d.
+// Native shapes from official DSH 0.2.1-rc.2 (687f282e8625c6b8d11ff58211a90524be2e4317):
+// tool/result carries a flattened ToolResultMessage with top-level toolCallId/isError.
 function event<T extends keyof SessionEventMap>(seq: number, type: T, data: SessionEventMap[T]): SessionEvent<T> {
   return { type, seq, time: seq * 100, data,
     ...type === 'assistant/message' || type === 'tool/result' ? { surfaceOp: 'append' } : {},
@@ -55,8 +56,9 @@ function call(seq: number, itemId = 'item', step = 1) {
 function result(seq: number, itemId = 'item', step = 1, isError = false) {
   const callId = `call-${itemId}` as ToolCallId
   return event(seq, 'tool/result', { turn: 1, step,
-    message: { id: `result-${itemId}` as MessageId, role: 'user', source: { kind: 'tool', callId },
-      content: [{ type: 'tool-result', toolCallId: callId, isError, content: [{ type: 'text', text: '/workspace\n' }] }],
+    message: { id: `result-${itemId}` as MessageId, role: 'tool', source: { kind: 'tool', callId },
+      toolCallId: callId, ...isError ? { isError: true } : {},
+      content: [{ type: 'text', text: '/workspace\n' }],
     },
     meta: JSON.parse(JSON.stringify({ codexActivity: payload(itemId, 'completed') })),
   })

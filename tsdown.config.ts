@@ -17,7 +17,6 @@ const EXTERNALS = new Set([
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-store',
   '@deepseek-ai/dsh-client-ui-settings',
-  '@deepseek-ai/dsh-client-ui-settings-plugins',
   '@deepseek-ai/dsh-client-ui-slots',
   '@deepseek-ai/dsh-client-ui-primitives',
 ])
@@ -57,7 +56,7 @@ const hostConfig: UserConfig = {
   target: 'es2024',
   fixedExtension: false,
   dts: false,
-  sourcemap: true,
+  sourcemap: false,
   clean: false,
   deps: {
     neverBundle: specifier => HOST_EXTERNALS.some(pattern => pattern.test(specifier)),
@@ -73,7 +72,7 @@ const clientConfig: UserConfig = {
   platform: 'browser',
   target: 'es2024',
   dts: false,
-  sourcemap: true,
+  sourcemap: false,
   clean: false,
   deps: {
     neverBundle: specifier => EXTERNALS.has(specifier),

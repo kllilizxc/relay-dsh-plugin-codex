@@ -25,7 +25,7 @@ export function installModelSelection(
     const list = ctx.sessions.list.getSnapshot();
     const latest = list.byId[id];
     return !stopped
-      && list.current === id
+      && (list.byId[id]?.retainedBy?.mainView ?? 0) > 0
       && latest?.blank === true
       && desired.get(id)?.generation === target.generation
       && sessionPreset(latest) === target.selectedPreset;
@@ -65,7 +65,7 @@ export function installModelSelection(
         return;
       }
       const model = group.models.find(candidate => candidate.id === models.current.model) ?? group.models[0];
-      await directory.select({
+      const selected = await directory.select({
         provider: group.id,
         model: model.id,
         ...(model.reasoning?.defaultEffort
@@ -73,6 +73,10 @@ export function installModelSelection(
           : {}),
       });
       if (!currentTarget(id, target)) return;
+      if (selected?.ok === false) {
+        retry(id, target);
+        return;
+      }
       clearRetry(id);
     } catch {
       retry(id, target);
@@ -85,7 +89,7 @@ export function installModelSelection(
   const sync = () => {
     if (stopped) return;
     const list = ctx.sessions.list.getSnapshot();
-    const id = list.current;
+    const id = Object.values(list.byId).find(session => (session.retainedBy?.mainView ?? 0) > 0)?.id;
     if (id === undefined || list.byId[id]?.blank !== true) return;
     const selectedPreset = sessionPreset(list.byId[id]);
     if (selectedPreset !== preset && selectedPreset === otherProvider) return;

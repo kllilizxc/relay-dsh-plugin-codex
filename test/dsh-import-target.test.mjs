@@ -63,7 +63,7 @@ test("Codex history projects native user and assistant messages in order and is 
   })), [
     { id: "codex:turn-1:user:u1", role: "user", text: "question one" },
     { id: "codex:turn-1:activity:c1:request", role: "assistant", text: "" },
-    { id: "codex:turn-1:activity:c1:result", role: "user", text: "/workspace/relay" },
+    { id: "codex:turn-1:activity:c1:result", role: "tool", text: "/workspace/relay" },
     { id: "codex:turn-1:assistant:a1", role: "assistant", text: "progress one" },
     { id: "codex:turn-1:assistant:a2", role: "assistant", text: "answer one" },
     { id: "codex:turn-2:user:u2", role: "user", text: "question two" },
@@ -135,7 +135,7 @@ test("Codex history preserves public activity types without exposing private rea
 
   assert.deepEqual(result, { projectedMessages: 3, projectedActivities: 4, projectedTurns: 1, skippedItems: 1 });
   assert.deepEqual(calls.map(event => event.data.name), ["bash", "edit", "web_search", "run_code"]);
-  assert.deepEqual(results.map(event => event.data.message.content[0].isError), [false, false, false, true]);
+  assert.deepEqual(results.map(event => event.data.message.isError), [false, false, false, true]);
   assert.deepEqual(results[1].data.meta, {
     diffs: [{ path: "/workspace/relay/src/a.js", oldText: "old", newText: "new" }],
   });
