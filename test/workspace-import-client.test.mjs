@@ -23,13 +23,12 @@ test("Workspace target resolution prefers the current Session owner then recent 
   assert.equal(resolveImportWorkspace({ items: [], recentWorkspaceId: undefined }, {}), null);
 });
 
-test("post-import refresh loads Sessions before Workspace membership", async () => {
+test("post-import refresh updates Sessions while Workspace follows the host feed", async () => {
   const calls = [];
   await refreshImportedWorkspace(
     { refresh: async () => { calls.push("sessions") } },
-    { refresh: async () => { calls.push("workspaces") } },
   );
-  assert.deepEqual(calls, ["sessions", "workspaces"]);
+  assert.deepEqual(calls, ["sessions"]);
 });
 
 test("scan uses the aggregate endpoint and surfaces server failures", async () => {

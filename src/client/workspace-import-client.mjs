@@ -33,9 +33,8 @@ export async function importCodexWorkspace(cwd, { threadIds, onProgress } = {}, 
   return completed;
 }
 
-export async function refreshImportedWorkspace(sessions, workspaces) {
+export async function refreshImportedWorkspace(sessions) {
   await sessions.refresh();
-  await workspaces.refresh();
 }
 
 export async function* ndjsonFrames(body) {

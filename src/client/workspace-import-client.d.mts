@@ -61,7 +61,6 @@ export function importCodexWorkspace(
 
 export function refreshImportedWorkspace(
   sessions: { refresh(): Promise<void> },
-  workspaces: { refresh(): Promise<void> },
 ): Promise<void>
 
 export function ndjsonFrames(body: ReadableStream<Uint8Array> | null): AsyncGenerator<unknown>

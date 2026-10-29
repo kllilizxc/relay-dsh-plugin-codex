@@ -90,10 +90,7 @@ function applySessionOpenSync(ctx: ClientContext): void {
     },
     (sessionId, isLatestSelection) => syncOpenedCodexSessionAndRefresh(
       sessionId,
-      () => Promise.all([
-        (ctx.sessions as typeof ctx.sessions & { refresh(): Promise<void> }).refresh(),
-        (ctx.workspaces as typeof ctx.workspaces & { refresh(): Promise<void> }).refresh(),
-      ]),
+      () => ctx.sessions.refresh(),
       fetch,
       rebuiltSessionId => ctx.uiWorkspace.openSession(rebuiltSessionId as SessionId),
       () => {},
@@ -108,10 +105,7 @@ function applyWorkspaceImport(ctx: ClientContext): void {
   const injected = (): WorkspaceImportInjected => ({
     scanWorkspace: cwd => scanCodexWorkspace(cwd),
     importWorkspace: (cwd, threadIds, onProgress) => importCodexWorkspace(cwd, { threadIds, onProgress }),
-    refreshWorkspaceState: () => refreshImportedWorkspace(
-      ctx.sessions as typeof ctx.sessions & { refresh(): Promise<void> },
-      ctx.workspaces as typeof ctx.workspaces & { refresh(): Promise<void> },
-    ),
+    refreshWorkspaceState: () => refreshImportedWorkspace(ctx.sessions),
   })
   ctx.slots.inject('relay.session-import.provider', () => ctx.slots.register({
     name: 'relay.session-import.provider',

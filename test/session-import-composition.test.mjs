@@ -6,9 +6,13 @@ const manifest = JSON.parse(await readFile(new URL("../package.json", import.met
 const lock = JSON.parse(await readFile(new URL('../package-lock.json', import.meta.url), 'utf8'))
 
 test("Codex depends on and loads the neutral session import hub first", async () => {
-  assert.equal(manifest.dependencies["relay-dsh-plugin-session-import"], "0.2.3");
-  assert.equal(lock.packages[''].dependencies['relay-dsh-plugin-session-import'], "0.2.3")
-  assert.match(lock.packages['node_modules/relay-dsh-plugin-session-import'].resolved, /[\/\\#]1b789b387e334f65ba364b1ed5fb91c861c5d045$/)
+  const source = manifest.dependencies["relay-dsh-plugin-session-import"];
+  const bundled = lock.packages['node_modules/relay-dsh-plugin-session-import'];
+  assert.equal(lock.packages[''].dependencies['relay-dsh-plugin-session-import'], source);
+  assert.equal(bundled.version, "0.2.4-rc.1-worka-public.2");
+  assert.equal(bundled.resolved, source);
+  assert.equal(bundled.inBundle, true);
+  assert.ok(manifest.bundleDependencies.includes("relay-dsh-plugin-session-import"));
   assert.ok(manifest.dsh.client.inject.includes("relay-dsh-plugin-session-import"));
 
   const patch = await readFile(new URL("../cordis.patch.yml", import.meta.url), "utf8");
