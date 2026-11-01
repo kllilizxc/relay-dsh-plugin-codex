@@ -71,6 +71,19 @@ test("the Codex preset streams reasoning and answers into the native DSH convers
   assert.deepEqual(codexAppTools.tools.map(tool => tool.name), ["load_workspace_dependencies"]);
 });
 
+test("user message whitespace reaches Codex unchanged", async () => {
+  const runtime = new FakeRuntime();
+  const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve() });
+  const agent = fakeAgent();
+  adapter.attachAgent(agent);
+  const text = "  # Exact Markdown\n\n- line  \n\n";
+  await collect(adapter.stream({
+    provider: "relay-codex", model: "codex-test", sessionId: agent.id,
+    messages: [{ role: "user", source: { kind: "user" }, content: [{ type: "text", text }] }],
+  }));
+  assert.equal(runtime.sent[0].message.text, text);
+});
+
 test("an empty App Server reasoning item creates no empty DSH disclosure", async () => {
   const runtime = new EmptyReasoningRuntime();
   const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve() });

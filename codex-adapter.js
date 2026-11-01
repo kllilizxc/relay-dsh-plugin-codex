@@ -1413,14 +1413,13 @@ async function latestUserInput(messages, attachments, signal) {
     const text = content
       .filter((block) => block.type === "text")
       .map((block) => block.text)
-      .join("\n")
-      .trim();
+      .join("\n");
     const localImages = [];
     for (const block of content) {
       const image = await localImage(block, attachments, signal);
       if (image) localImages.push(image);
     }
-    if (text || localImages.length > 0) return { text, localImages };
+    if (text.trim() || localImages.length > 0) return { text, localImages };
   }
   return null;
 }
