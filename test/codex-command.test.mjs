@@ -18,7 +18,7 @@ test("default auto mode discovers and validates a local executable before bundle
   assert.equal(launch.command, process.execPath);
   assert.equal(launch.source, "local");
   assert.equal(launch.mode, "auto");
-  assert.equal(launch.fallback.source, "bundled");
+  assert.equal(launch.resolveFallback().source, "bundled");
 });
 
 test("auto candidates are tried in order and invalid candidates are skipped", () => {
@@ -34,7 +34,7 @@ test("auto candidates are tried in order and invalid candidates are skipped", ()
     resolvePackage: fakePackageResolver,
   });
   assert.equal(launch.command, "/good");
-  assert.deepEqual(launch.fallback, {
+  assert.deepEqual(launch.resolveFallback(), {
     command: process.execPath,
     argsPrefix: ["/bundled/codex.js"],
     source: "bundled",

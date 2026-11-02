@@ -76,7 +76,8 @@ export class CodexDshAdapter extends LlmAdapter {
 
   async listModels() {
     await this.ready;
-    return runtimeModels(this.runtime)
+    const models = this.runtime.refreshModels ? await this.runtime.refreshModels() : runtimeModels(this.runtime);
+    return models
       .sort((left, right) => Number(Boolean(right.isDefault)) - Number(Boolean(left.isDefault)))
       .map((model) => ({
         provider: CODEX_PROVIDER,
