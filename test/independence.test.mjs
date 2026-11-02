@@ -21,7 +21,14 @@ test("Codex plugin remains independently installable", async () => {
       `${field} must not depend on a Relay application or feature plugin`,
     );
   }
-  assert.equal(manifest.dependencies["relay-dsh-plugin-session-import"], "0.2.3");
+  const name = "relay-dsh-plugin-session-import";
+  const lock = JSON.parse(await readFile(join(root, "package-lock.json"), "utf8"));
+  const entry = lock.packages[`node_modules/${name}`];
+  const archive = new URL(manifest.dependencies[name]).pathname.split("/").at(-1);
+  assert.match(archive, /^[0-9a-f]{64}\.tgz$/);
+  assert.equal(manifest.dependencies[name], `https://github.com/kllilizxc/${name}/releases/download/v${entry.version}/${archive}`);
+  assert.equal(entry.resolved, manifest.dependencies[name]);
+  assert.ok(manifest.bundleDependencies.includes(name) && entry.inBundle === true);
 
   for (const file of await sourceFiles(root)) {
     const source = await readFile(file, "utf8");
