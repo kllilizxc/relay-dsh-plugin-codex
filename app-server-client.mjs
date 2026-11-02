@@ -130,14 +130,21 @@ export class CodexAppServerClient extends EventEmitter {
     try {
       await this.startLaunch(this.launch);
     } catch (error) {
-      if (this.closed || !this.launch.fallback) throw error;
+      if (this.closed || !this.launch.resolveFallback) throw error;
+      let fallback;
+      try {
+        fallback = this.launch.resolveFallback();
+      } catch (cause) {
+        this.emit("diagnostic", `Bundled Codex fallback unavailable: ${cause.message}`);
+        throw error;
+      }
       this.emit(
         "diagnostic",
         `Automatic Codex runtime at ${this.launch.command} failed preflight: `
         + `${error?.code ?? "ERROR"} ${error?.message ?? error}; falling back to bundled runtime.`,
       );
       await this.stopProcess();
-      this.launch = this.launch.fallback;
+      this.launch = fallback;
       this.applyLaunch(this.launch);
       try {
         await this.startLaunch(this.launch);
@@ -184,9 +191,7 @@ export class CodexAppServerClient extends EventEmitter {
         capabilities: this.capabilities,
       });
       this.notify("initialized", {});
-      const models = await this.request("model/list", { limit: 50, includeHidden: false });
-      assertUsableModelList(models);
-      this.initialModels = structuredClone(models);
+      this.initialModels = await readCodexModelList(this);
     } catch (error) {
       await this.stopProcess();
       throw error;
@@ -318,15 +323,25 @@ function appServerNotRunningError() {
   return error;
 }
 
-function assertUsableModelList(result) {
-  if (!Array.isArray(result?.data)) {
-    const error = new Error("Codex App Server returned an invalid model/list response.");
-    error.code = "CODEX_MODEL_LIST_INVALID";
-    throw error;
-  }
-  if (!result.data.some((model) => typeof model?.id === "string" && model.id.trim())) {
+export async function readCodexModelList(client) {
+  const data = [];
+  const cursors = new Set();
+  let cursor = null;
+  do {
+    const page = await client.request("model/list", { cursor, limit: 50, includeHidden: false });
+    cursor = page?.nextCursor ?? null;
+    if (!Array.isArray(page?.data) || (cursor !== null && (typeof cursor !== "string" || cursors.has(cursor)))) {
+      const error = new Error("Codex App Server returned an invalid model/list response.");
+      error.code = "CODEX_MODEL_LIST_INVALID";
+      throw error;
+    }
+    data.push(...page.data);
+    cursors.add(cursor);
+  } while (cursor !== null);
+  if (!data.some((model) => typeof model?.id === "string" && model.id.trim())) {
     const error = new Error("Codex App Server returned no usable models.");
     error.code = "CODEX_MODEL_LIST_EMPTY";
     throw error;
   }
+  return { data, nextCursor: null };
 }

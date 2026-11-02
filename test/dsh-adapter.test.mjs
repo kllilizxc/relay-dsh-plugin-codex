@@ -28,6 +28,17 @@ import { CODEX_APP_DYNAMIC_TOOLS, handleCodexServerRequest } from "../codex-tool
 import { CODEX_EXECUTION_GUIDANCE } from "../execution-guidance.mjs";
 
 
+test("the DSH picker refreshes the running Codex model catalog on each listing", async () => {
+  let revision = 0;
+  const runtime = {
+    listModels: () => [{ id: "startup-only" }],
+    refreshModels: async () => [{ id: `server-${++revision}`, displayName: "From Codex" }],
+  };
+  const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve() });
+  assert.deepEqual((await adapter.listModels()).map(model => model.id), ["server-1"]);
+  assert.deepEqual((await adapter.listModels()).map(model => model.id), ["server-2"]);
+});
+
 test("the Codex preset streams reasoning and answers into the native DSH conversation", async () => {
   const runtime = new FakeRuntime();
   const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve() });

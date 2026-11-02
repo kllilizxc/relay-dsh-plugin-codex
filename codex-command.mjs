@@ -94,7 +94,7 @@ function resolveAuto({
         argsPrefix: [],
         source: "local",
         mode: "auto",
-        fallback: bundledLaunch({ platform, arch, execPath, resolvePackage }),
+        resolveFallback: () => bundledLaunch({ platform, arch, execPath, resolvePackage }),
       });
     } catch (error) {
       failures.push({ path, code: error.code ?? "CODEX_EXECUTABLE_INVALID" });

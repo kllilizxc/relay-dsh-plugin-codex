@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
+import { readCodexModelList } from "./app-server-client.mjs";
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -66,8 +67,7 @@ export class CodexSessionRuntime extends EventEmitter {
     try {
       await this.client.start();
       const [modelsResult, accountResult, threadsResult] = await Promise.all([
-        this.client.initialModels
-          ?? this.client.request("model/list", { limit: 50, includeHidden: false }),
+        this.client.initialModels ?? readCodexModelList(this.client),
         this.client.request("account/read", { refreshToken: false }).catch((error) => {
           this.addDiagnostic(`account/read failed: ${error.message}`);
           return null;
@@ -97,6 +97,14 @@ export class CodexSessionRuntime extends EventEmitter {
       this.setConnectionStatus(codexConnectionFailure(operational));
       throw operational;
     }
+  }
+
+  async refreshModels() {
+    this.pendingModels ??= readCodexModelList(this.client).then(({ data }) => {
+      this.models = data;
+      return data;
+    }).finally(() => { this.pendingModels = null; });
+    return structuredClone(await this.pendingModels);
   }
 
   async listWorkspaceThreads({
