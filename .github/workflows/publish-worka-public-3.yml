@@ -1,0 +1,129 @@
+name: Publish verified Worka Codex compatibility release
+on:
+  push:
+    branches: [release/publish-worka-public.3]
+permissions: {}
+concurrency:
+  group: release-worka-public-3
+  cancel-in-progress: false
+env:
+  REPO: 'kllilizxc/relay-dsh-plugin-codex'
+  TAG: 'v0.2.5-rc.1-worka-public.3'
+  SOURCE_SHA: '0993404432eec3d3e686ce4e2f10bb27a1a0cd57'
+  DIGEST: '6cedc240ce1e03abbba97cb31b12dd715a3ee4bcba7be13be066264634e9daab'
+  INTEGRITY: 'sha512-NeRH/VmNZWejUjChE+Q1u/Y5daI/8zAtZ37W2nYZAkZ/xJukEnr4gjrGnTWYf+gqxOBw4Qr8tT2YasMnBl7j+A=='
+
+jobs:
+  pack:
+    if: github.repository == 'kllilizxc/relay-dsh-plugin-codex' && github.ref == 'refs/heads/release/publish-worka-public.3'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '24.22.1'
+          package-manager-cache: false
+      - name: Use the pinned npm packer
+        run: npm install --global --ignore-scripts --no-audit --no-fund npm@11.9.0
+      - name: Reproduce the reviewed tarball from the fixed public commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = v24.22.1
+          test "$(npm --version)" = 11.9.0
+
+          repo_url="https://github.com/$REPO.git"
+          git init -q source
+          git -C source remote add origin "$repo_url"
+          git -C source fetch --quiet --depth=1 origin "$SOURCE_SHA"
+          git -C source checkout --quiet --detach FETCH_HEAD
+          test "$(git -C source rev-parse HEAD)" = "$SOURCE_SHA"
+          git -C source show -s --format='Source %H, committed %cI'
+          test "$(node -p "require('./source/package.json').version")" = "${TAG#v}"
+          printf '%s  source/PROVENANCE.md\n' '0a3b81139dbb58ebfa70ae7dc35a906cebbcfbb33578f841733988cb89f64cc2' | sha256sum --check
+
+          nested=19d23534cffb0eb6f3e0b5f7580cdbf0d846dc79337383f080e52c8d01b96fa4
+          upstream="https://github.com/kllilizxc/relay-dsh-plugin-session-import/releases/download/v0.2.4-rc.1-worka-public.2"
+          curl --fail --silent --show-error --location --proto '=https' --retry 3 "$upstream/$nested.tgz" --output nested.tgz
+          printf '%s  nested.tgz\n' "$nested" | sha256sum --check
+          mkdir -p source/node_modules/relay-dsh-plugin-session-import files
+          tar --extract --gzip --file nested.tgz --directory source/node_modules/relay-dsh-plugin-session-import --strip-components=1
+          (cd source && npm pack --offline --ignore-scripts --pack-destination ../files --json . > ../pack.json)
+          jq -e --arg sha "$INTEGRITY" 'length == 1 and .[0].name == "relay-dsh-plugin-codex" and .[0].integrity == $sha and .[0].size == 331581' pack.json >/dev/null
+          mv "files/relay-dsh-plugin-codex-${TAG#v}.tgz" "files/$DIGEST.tgz"
+          (cd files && printf '%s  %s.tgz\n' "$DIGEST" "$DIGEST" >SHA256SUMS.txt && sha256sum --check SHA256SUMS.txt)
+          cp source/PROVENANCE.md files/PROVENANCE.md
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: verified-public-3
+          path: files/
+          if-no-files-found: error
+          retention-days: 1
+  publish:
+    needs: pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: verified-public-3
+          path: files
+      - name: Publish the verified release and check all public downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${REPO:?}" "${TAG:?}" "${SOURCE_SHA:?}" "${DIGEST:?}" "${INTEGRITY:?}" "${GH_TOKEN:?}"
+          test "$REPO" = kllilizxc/relay-dsh-plugin-codex
+          test "$TAG" = v0.2.5-rc.1-worka-public.3
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$DIGEST" = 6cedc240ce1e03abbba97cb31b12dd715a3ee4bcba7be13be066264634e9daab
+          cd "${ARTIFACT_DIR:-files}"
+          artifact="$DIGEST.tgz"
+          test "$(wc -c <"$artifact" | tr -d ' ')" = 331581
+          test "sha512-$(openssl dgst -sha512 -binary "$artifact" | openssl base64 -A)" = "$INTEGRITY"
+          printf '%s  %s\n' "$DIGEST" "$artifact" | cmp - SHA256SUMS.txt
+          sha256sum --check SHA256SUMS.txt
+          printf '%s  PROVENANCE.md\n' '0a3b81139dbb58ebfa70ae7dc35a906cebbcfbb33578f841733988cb89f64cc2' | sha256sum --check
+
+          remote_tag() {
+            git ls-remote "https://github.com/$REPO.git" "refs/tags/$1" "refs/tags/$1^{}" |
+              awk 'NR == 1 { oid=$1 } /\^\{\}$/ { oid=$1 } END {print oid}'
+          }
+          test "$(remote_tag v0.2.5-rc.1-worka-public.2)" = 3c17ed04a2e19f1793750f6712b5b254b2c237bb
+          prior="$(remote_tag "$TAG")"
+          if [[ -n "$prior" && "$prior" != "$SOURCE_SHA" ]]; then echo 'Existing release tag points to a different source' >&2; exit 1; fi
+          api="repos/$REPO/releases"
+          release="$(gh api --paginate --slurp "$api?per_page=100" |
+            jq -c --arg tag "$TAG" '[.[][] | select(.tag_name == $tag)] | if length > 1 then error("Duplicate release") else .[0] end')"
+          if [[ "$release" = null ]]; then
+            notes="$(printf '%s\n\n%s\n%s\n' 'Recover usable local Codex installations and refresh every visible model page. The adapter is built for DSH 0.2.1-rc.2 and pins Codex CLI 0.166.0.' "Source commit: $SOURCE_SHA. Build provenance: https://github.com/$REPO/blob/$SOURCE_SHA/PROVENANCE.md" "Archive SHA-256: $DIGEST")"
+            release="$(gh api --method POST "$api" -f tag_name="$TAG" -f target_commitish="$SOURCE_SHA" -f name="$TAG" -f body="$notes" -F draft=true -F prerelease=true -f make_latest=false)"
+          fi
+          jq -e --arg sha "$SOURCE_SHA" --arg tag "$TAG" '.target_commitish == $sha and .tag_name == $tag and .prerelease == true' <<<"$release" >/dev/null
+          id="$(jq -er .id <<<"$release")"
+          draft="$(jq -r .draft <<<"$release")"
+          assets="$(gh api --paginate --slurp "$api/$id/assets?per_page=100" | jq -c 'add // []')"
+          jq -e --arg name "$artifact" 'all(.[]; (.name == $name or .name == "SHA256SUMS.txt" or .name == "PROVENANCE.md")) and (map(.name) | unique | length) == length' <<<"$assets" >/dev/null
+          for name in "$artifact" SHA256SUMS.txt PROVENANCE.md; do
+            existing="$(jq -r --arg n "$name" '.[] | select(.name == $n) | .id' <<<"$assets")"
+            if [[ -z "$existing" ]]; then
+              if [[ "$draft" != true ]]; then echo 'Published release is incomplete. Refusing to change it.' >&2; exit 1; fi
+              gh release upload "$TAG" "$name" --repo "$REPO"
+              existing="$(gh api --paginate --slurp "$api/$id/assets?per_page=100" | jq -er --arg n "$name" '[.[][] | select(.name == $n)] | if length == 1 then .[0].id else error("Unexpected release assets") end')"
+            fi
+            gh api --header 'Accept: application/octet-stream' "$api/assets/$existing" | cmp - "$name"
+          done
+          if [[ "$draft" = true ]]; then
+            gh api --method PATCH "$api/$id" -F draft=false -F prerelease=true -f make_latest=false >/dev/null
+          fi
+          test "$(remote_tag "$TAG")" = "$SOURCE_SHA"
+          for name in "$artifact" SHA256SUMS.txt PROVENANCE.md; do
+            curl --fail --silent --show-error --location --proto '=https' --retry 4 --retry-all-errors "https://github.com/$REPO/releases/download/$TAG/$name" | cmp - "$name"
+          done
+          echo "Verified https://github.com/$REPO/releases/tag/$TAG"
