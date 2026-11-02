@@ -1,6 +1,6 @@
 {
   "name": "relay-dsh-plugin-codex",
-  "version": "0.2.5-rc.1-worka-public.2",
+  "version": "0.2.5-rc.1-worka-public.3",
   "private": true,
   "description": "Codex conversation backend for DeepSeek Harness, powered by the Codex App Server with approvals and DSH tool support.",
   "keywords": [
@@ -113,7 +113,7 @@
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "3.18.5",
-    "@openai/codex": "0.155.1",
+    "@openai/codex": "0.166.0",
     "lucide-react": "^1.37.0",
     "relay-dsh-plugin-session-import": "https://github.com/kllilizxc/relay-dsh-plugin-session-import/releases/download/v0.2.4-rc.1-worka-public.2/19d23534cffb0eb6f3e0b5f7580cdbf0d846dc79337383f080e52c8d01b96fa4.tgz"
   },

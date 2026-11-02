@@ -36,6 +36,38 @@ test("Codex plugin exposes operation capabilities and releases subscriptions", a
   assert.equal(client.closed, true);
 });
 
+test("catalog refresh reads every visible page and commits only complete listings", async () => {
+  const client = new FakeCodexClient();
+  const host = new PluginHost();
+  await host.activate([createCodexExecutionPlugin({ client, cwd: "/workspace" })]);
+  const execution = host.capabilities.require("relay.execution.codex.v1", "^1.0.0");
+  try {
+    await execution.whenReady();
+    const cursors = [];
+    let repeat = false;
+    client.request = async (method, { cursor, includeHidden }) => {
+      assert.equal(method, "model/list");
+      assert.equal(includeHidden, false);
+      cursors.push(cursor);
+      return cursor === null
+        ? { data: [{ id: "first" }], nextCursor: "next" }
+        : { data: [{ id: "new-model" }], nextCursor: repeat ? "next" : null };
+    };
+    const [models, concurrent] = await Promise.all([execution.refreshModels(), execution.refreshModels()]);
+    assert.deepEqual(cursors, [null, "next"]);
+    assert.deepEqual(models.map(model => model.id), ["first", "new-model"]);
+    assert.deepEqual(concurrent, execution.listModels());
+
+    repeat = true;
+    await assert.rejects(execution.refreshModels(), { code: "CODEX_MODEL_LIST_INVALID" });
+    assert.deepEqual(execution.listModels(), models);
+    repeat = false;
+    assert.deepEqual(await execution.refreshModels(), models);
+  } finally {
+    await host.dispose();
+  }
+});
+
 test("a missing configured executable keeps the plugin loaded with actionable unavailable status", async () => {
   const host = new PluginHost();
   await host.activate([createCodexExecutionPlugin({

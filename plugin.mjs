@@ -180,6 +180,7 @@ export class CodexRuntimeController extends EventEmitter {
   whenReady() { return this.ready ?? Promise.reject(notStartedError()); }
   status() { return this.current?.runtime.status() ?? initialUnavailableStatus(); }
   listModels() { return structuredClone(this.current?.runtime.models ?? []); }
+  refreshModels() { return this.current.runtime.refreshModels(); }
   async listSkills(cwd) {
     const result = await this.request("skills/list", { cwds: [cwd], forceReload: true });
     return result.data.flatMap(entry => entry.skills).filter(skill => skill.enabled)
@@ -242,6 +243,7 @@ function executionCapability(runtime) {
     status: () => runtime.status(),
     subscribeStatus: (listener) => runtime.subscribeStatus(listener),
     listModels: () => runtime.listModels(),
+    refreshModels: () => runtime.refreshModels(),
     listSkills: cwd => runtime.listSkills(cwd),
     hasSession: (sessionId) => runtime.hasSession(sessionId),
     getSession: (sessionId) => runtime.getSession(sessionId),

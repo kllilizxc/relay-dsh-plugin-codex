@@ -204,6 +204,23 @@ test("initialization client identity and capabilities can be overridden", async 
   client.process = null;
 });
 
+test("a working local App Server starts without a bundled platform package", async () => {
+  const client = new CodexAppServerClient({
+    args: ["-e", fixtureSource("[{ id: 'local-model' }]")],
+    launchOptions: {
+      candidatePaths: [process.execPath],
+      resolvePackage() { throw new Error("no bundled platform package"); },
+    },
+  });
+  try {
+    await client.start();
+    assert.equal(client.commandSource, "local");
+    assert.equal(client.initialModels.data[0].id, "local-model");
+  } finally {
+    await client.close();
+  }
+});
+
 test("an automatically discovered runtime with an unusable model list falls back to bundled", async () => {
   const root = await mkdtemp(join(tmpdir(), "relay-codex-preflight-"));
   let local;
