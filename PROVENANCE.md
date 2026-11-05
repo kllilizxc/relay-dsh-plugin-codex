@@ -1,20 +1,13 @@
-# Worka public compatibility release 0.2.5-rc.1-worka-public.3
+# Worka public compatibility release 0.2.5-rc.1-worka-public.4
 
-This release combines the previous compatibility release `3c17ed04a2e19f1793750f6712b5b254b2c237bb` with merged Relay PR #2 at `e170713089b6aa4355d4a46f77b8e5bd08a523f1`. It targets DSH `0.2.1-rc.2` and React `19.3.0`. The Codex host bundle matches the merged main commit. The client bundle, session-import integration and bundled licenses match the previous compatibility release. The launcher and six platform-specific aliases in the committed npm lock use Codex `0.166.0`. Worka Desktop downloads its managed platform binary separately.
+This release advances the immutable `0.2.5-rc.1-worka-public.3` compatibility source. It preserves the existing DSH 0.2.1-rc.2 and React 19.3.0 peer contract, Codex CLI 0.166.0 and the same publicly bundled session-import package.
 
-## Reproduce the release archive
+## Change
 
-Use Node 24.22.1 and npm 11.9.0 in a fresh checkout of the tagged source. The reviewed generated bundles are tracked. Fetch the session-import archive from its public release, verify it and unpack its content into the dependency directory before packing. These commands require no access to any Worka profile.
+Codex model catalog refresh failures no longer suppress the model choices already verified on App Server startup. An initially empty/invalid model list still fails visibly. The host does not invent models or override user authentication.
 
-```sh
-set -eu
-session_digest=19d23534cffb0eb6f3e0b5f7580cdbf0d846dc79337383f080e52c8d01b96fa4
-curl --fail --location --output session-import.tgz "https://github.com/kllilizxc/relay-dsh-plugin-session-import/releases/download/v0.2.4-rc.1-worka-public.2/${session_digest}.tgz"
-printf '%s  %s\n' "$session_digest" session-import.tgz | sha256sum --check
-mkdir -p node_modules/relay-dsh-plugin-session-import dist-release
-tar -xzf session-import.tgz -C node_modules/relay-dsh-plugin-session-import --strip-components=1
-npm pack --ignore-scripts --offline --pack-destination dist-release .
-sha256sum dist-release/*.tgz
-```
+## Verification and release
 
-The resulting package contains 38 entries, including the bundled session-import package. The archive is 331581 bytes. Its SHA-256 is `6cedc240ce1e03abbba97cb31b12dd715a3ee4bcba7be13be066264634e9daab`, and its npm integrity is `sha512-NeRH/VmNZWejUjChE+Q1u/Y5daI/8zAtZ37W2nYZAkZ/xJukEnr4gjrGnTWYf+gqxOBw4Qr8tT2YasMnBl7j+A==`.
+The dedicated tagged-source release workflow runs the existing DSH-integrated `npm run verify`, requires generated `lib/` to match committed source, and packs through npm with the same exact public session-import dependency. The workflow publishes an immutable digest-named archive, its SHA-256 checksum, its SHA-512 npm integrity and a source-commit provenance record. Worka must update its manifest and frozen lock to the new verified asset; merely updating this source branch is not a deployment.
+
+The previous `0.2.5-rc.1-worka-public.3` archive remains unchanged. Do not publish over an existing tag or modify a verified release asset.

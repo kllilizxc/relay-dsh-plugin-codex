@@ -39,6 +39,34 @@ test("the DSH picker refreshes the running Codex model catalog on each listing",
   assert.deepEqual((await adapter.listModels()).map(model => model.id), ["server-2"]);
 });
 
+test("a failed Codex model refresh keeps the last verified connected catalog visible", async () => {
+  const warnings = [];
+  const runtime = {
+    listModels: () => [{ id: "from-startup", displayName: "Startup model", isDefault: true }],
+    refreshModels: async () => { throw new Error("model/list timed out"); },
+  };
+  const adapter = new CodexDshAdapter({
+    runtime, ready: Promise.resolve(), logger: { warn: (message) => warnings.push(message) },
+  });
+  assert.deepEqual((await adapter.listModels()).map((model) => model.id), ["from-startup"]);
+  assert.equal(warnings.length, 1);
+});
+
+test("Codex model discovery errors remain visible when no verified model exists", async () => {
+  const runtime = {
+    listModels: () => [],
+    refreshModels: async () => { throw new Error("model/list unavailable"); },
+  };
+  const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve() });
+  await assert.rejects(adapter.listModels(), /model\/list unavailable/);
+});
+
+test("a malformed empty Codex refresh never becomes an apparently successful empty picker", async () => {
+  const runtime = { listModels: () => [], refreshModels: async () => [] };
+  const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve() });
+  await assert.rejects(adapter.listModels(), (error) => error.code === "CODEX_MODEL_LIST_EMPTY");
+});
+
 test("the Codex preset streams reasoning and answers into the native DSH conversation", async () => {
   const runtime = new FakeRuntime();
   const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve() });

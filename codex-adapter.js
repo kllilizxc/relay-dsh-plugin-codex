@@ -76,8 +76,29 @@ export class CodexDshAdapter extends LlmAdapter {
 
   async listModels() {
     await this.ready;
-    const models = this.runtime.refreshModels ? await this.runtime.refreshModels() : runtimeModels(this.runtime);
-    return models
+    // Startup discovery already verified the official Codex model/list response.
+    // An intermittent refresh failure must not remove a connected provider from
+    // DSH's model picker. Keep the last verified list, without inventing IDs.
+    const retained = runtimeModels(this.runtime);
+    let models = retained;
+    if (this.runtime.refreshModels) {
+      try {
+        models = await this.runtime.refreshModels();
+      } catch (error) {
+        if (!retained.some((model) => typeof model?.id === "string" && model.id.trim())) throw error;
+        this.logger.warn?.("Relay Codex model refresh failed; using the last verified model catalog.");
+        models = retained;
+      }
+    }
+    const usable = Array.isArray(models)
+      ? models.filter((model) => typeof model?.id === "string" && model.id.trim())
+      : [];
+    if (usable.length === 0) {
+      const error = new Error("Relay Codex returned no selectable models. Check the Codex App Server model/list diagnostics.");
+      error.code = "CODEX_MODEL_LIST_EMPTY";
+      throw error;
+    }
+    return usable
       .sort((left, right) => Number(Boolean(right.isDefault)) - Number(Boolean(left.isDefault)))
       .map((model) => ({
         provider: CODEX_PROVIDER,
