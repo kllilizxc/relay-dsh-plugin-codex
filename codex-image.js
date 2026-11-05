@@ -1,5 +1,12 @@
 import { readFile, realpath } from "node:fs/promises";
-import { basename, resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { basename, isAbsolute, join, resolve, sep } from "node:path";
+
+/** The same Codex-owned image roots used by the App Server, plus the session workspace. */
+export function codexImageRoots(workspace) {
+  const codexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
+  return [resolve(workspace ?? process.cwd()), resolve(codexHome, "generated_images"), resolve(codexHome, "visualizations")];
+}
 
 export async function importCodexImage(path, roots, attachments) {
   const target = await allowedRealPath(path, roots);
@@ -104,7 +111,7 @@ function normalizeImageMediaType(value) {
 }
 
 export async function allowedRealPath(path, roots) {
-  const target = await realpath(resolve(path));
+  const target = await realpath(isAbsolute(path) ? path : resolve(roots[0] ?? process.cwd(), path));
   const allowedRoots = await Promise.all(roots.map(root => realpath(resolve(root)).catch(() => null)));
   if (!allowedRoots.some(root => root && (target === root || target.startsWith(`${root}${sep}`)))) {
     throw new Error("image path is outside the Codex workspace");
