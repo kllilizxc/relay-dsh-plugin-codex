@@ -1,11 +1,10 @@
 import { sessionEvents, toolCallId as ToolCallId } from "./dsh-compat.mjs";
-import { homedir } from "node:os";
-import { basename, resolve } from "node:path";
+import { basename } from "node:path";
 
 import { createMessage, createToolResultMessage, LlmAdapter, LlmError, projectFilesToText } from "@deepseek-ai/dsh-llm";
 import { CODEX_ACTIVITY_TOOL } from "./codex-activity-wire.mjs";
 
-import { importCodexGeneratedImage, importCodexImage, importCodexMcpImage } from "./codex-image.js";
+import { codexImageRoots, importCodexGeneratedImage, importCodexImage, importCodexMcpImage } from "./codex-image.js";
 import { materializeCodexAttachment } from "./codex-image-input.js";
 import { CODEX_APP_DYNAMIC_TOOLS, codexDshToolSurface } from "./codex-tools.js";
 import { rebindRequiredStatus } from "./connection-status.mjs";
@@ -923,10 +922,7 @@ export class CodexDshAdapter extends LlmAdapter {
     }
     if (item.type === "imageGeneration" || item.type === "imageView") {
       if (!this.attachments) return [];
-      const roots = [
-        resolve(agent.session.header.cwd ?? process.cwd()),
-        resolve(homedir(), ".codex", "generated_images"),
-      ];
+      const roots = codexImageRoots(agent.session.header.cwd);
       const index = state.nextIndex++;
       try {
         const attachment = item.type === "imageGeneration"

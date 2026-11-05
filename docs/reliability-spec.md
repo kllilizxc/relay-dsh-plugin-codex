@@ -236,9 +236,11 @@ media type. The DSH attachment store remains the authority for full decode,
 normalization, size, and pixel-limit validation.
 
 A filename such as `completed-clean.png` may therefore produce an
-`image/jpeg` attachment when its bytes are JPEG. Workspace and generated-image
-root checks still run before any local file is read; byte detection does not
-expand the allowed filesystem boundary.
+`image/jpeg` attachment when its bytes are JPEG. Workspace, generated-image, and Codex visualization root checks still run
+before any local file is read; byte detection does not expand the allowed
+filesystem boundary. Relative image paths resolve against the session workspace,
+not the host plugin's process directory. The Codex-owned roots honor CODEX_HOME,
+matching the App Server's configured visualization directory.
 
 Image preview admission and storage are projection concerns. Failure of one
 image emits one terminal text placeholder and a Host warning containing only a
