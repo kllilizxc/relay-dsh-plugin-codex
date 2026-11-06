@@ -1,17 +1,20 @@
 import { readFile, realpath } from "node:fs/promises";
-import { basename, resolve, sep } from "node:path";
+import { basename, isAbsolute, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export async function importCodexImage(path, roots, attachments) {
-  return saveCodexImage(await allowedRealPath(path, roots), attachments);
+  const target = await allowedRealPath(path, roots);
+  return saveImageFile(target, attachments);
 }
 
-// Called only for the file returned by a completed App Server imageView item.
-// Codex already admitted that read; do not infer permission from the DSH cwd again.
+/** A completed, still-owned native view already passed Codex's filesystem policy. */
 export async function importCodexViewedImage(path, attachments) {
-  return saveCodexImage(await realpath(resolve(path)), attachments);
+  const target = localImagePath(path);
+  if (!isAbsolute(target)) throw new Error("Codex viewed image must use an absolute local path");
+  return saveImageFile(target, attachments);
 }
 
-async function saveCodexImage(target, attachments) {
+async function saveImageFile(target, attachments) {
   const data = await readFile(target);
   const mediaType = detectImageMediaType(data);
   if (!mediaType) throw new Error("unsupported or malformed Codex image data");
@@ -129,12 +132,16 @@ function normalizeImageMediaType(value) {
 }
 
 export async function allowedRealPath(path, roots) {
-  const target = await realpath(resolve(path));
+  const target = await realpath(resolve(localImagePath(path)));
   const allowedRoots = await Promise.all(roots.map(root => realpath(resolve(root)).catch(() => null)));
   if (!allowedRoots.some(root => root && (target === root || target.startsWith(`${root}${sep}`)))) {
     throw new Error("image path is outside the Codex workspace");
   }
   return target;
+}
+
+function localImagePath(path) {
+  return path.startsWith("file:") ? fileURLToPath(path) : path;
 }
 
 function extensionFor(mediaType) {
