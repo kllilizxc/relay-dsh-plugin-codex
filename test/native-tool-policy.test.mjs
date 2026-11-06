@@ -208,3 +208,18 @@ test("turn cannot narrow or change the thread grant without reloading its config
   await assert.rejects(runtime.sendMessage(session.id, { text: "work", nativeToolAllowlist: fullRead }), /resume the thread/);
   assert.deepEqual(client.requests, []);
 });
+
+test("best-effort hook permits host tools and denies native patch", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const client = new Client();
+  const runtime = new CodexSessionRuntime({ client });
+  await runtime.createSession({ nativeToolAllowlist: [] });
+  const command = client.requests.find(r => r.method === "thread/start").params.config["hooks.PreToolUse"][0].hooks[0].command;
+  const run = tool_name => {
+    const result = spawnSync("/bin/sh", ["-c", command], { input: JSON.stringify({tool_name}), encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  assert.deepEqual(run("dshworkbench"), {});
+  assert.equal(run("apply_patch").hookSpecificOutput.permissionDecision, "deny");
+});

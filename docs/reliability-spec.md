@@ -95,6 +95,12 @@ for trusted local plugins, not an adversarial security boundary: Codex may expos
 be fail-open. See https://github.com/openai/codex/issues/41979. The read-only
 sandbox independently prevents native filesystem writes.
 
+Changing policy unloads an idle native Thread before resuming the same ID and
+history. A running Turn is never interrupted; failed unload/resume aborts the
+request. Removing policy resumes without feature overrides so current user and
+project configuration is restored instead of force-enabling tools. The policy is
+not persisted as a user's Session setting.
+
 ## Plugin Hook trust propagation
 
 Codex evaluates installed Plugin Hooks when each Thread is started, forked, or
