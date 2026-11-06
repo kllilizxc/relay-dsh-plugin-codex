@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { supportsAsyncQuestions } from "./codex-questions.mjs";
 
 export const CODEX_RESERVED_DYNAMIC_TOOL_PREFIX = "mcp__";
 const DSH_MCP_TOOL_ALIAS_PREFIX = "relay_mcp__";
@@ -27,8 +28,12 @@ export function codexDynamicTools(dshTools = [], builtins = CODEX_APP_DYNAMIC_TO
 }
 
 export function codexDshToolSurface(dshTools = [], builtins = CODEX_APP_DYNAMIC_TOOLS) {
-  const bindings = codexDshToolBindings(dshTools);
-  const tools = dshTools.map(tool => ({
+  // Native async questions already persist the card and its late answer in DSH.
+  // A second dynamic invocation only records relay activity, losing timed cards.
+  const exposed = supportsAsyncQuestions(dshTools)
+    ? dshTools.filter(tool => tool.name !== "ask_user_question") : dshTools;
+  const bindings = codexDshToolBindings(exposed);
+  const tools = exposed.map(tool => ({
     type: "function",
     name: bindings.originalToAlias.get(String(tool.name)),
     description: tool.description,
@@ -88,7 +93,7 @@ export async function handleCodexServerRequest(ctx, { adapter, runtime, request 
 
   try {
     if (request.method === "item/tool/call" || request.method === "item/dynamicTool/call") {
-      await handleDynamicTool(runtime, request, adapter, agent, sessionId);
+      await handleDynamicTool(runtime, request, adapter, agent, sessionId, ctx.attachments);
       return;
     }
     if (isApproval(request.method)) {
@@ -118,7 +123,7 @@ export async function handleCodexServerRequest(ctx, { adapter, runtime, request 
   }
 }
 
-async function handleDynamicTool(runtime, request, adapter, agent, sessionId) {
+async function handleDynamicTool(runtime, request, adapter, agent, sessionId, attachments) {
   const { namespace, name: tool } = requestedTool(request.params);
   if ((namespace === "codex_app" || !namespace) && tool === "load_workspace_dependencies") {
     const result = workspaceDependenciesResult();
@@ -147,8 +152,18 @@ async function handleDynamicTool(runtime, request, adapter, agent, sessionId) {
       signal,
     });
     signal.throwIfAborted();
+    let content;
+    try {
+      content = await toolResultContent(result, attachments, signal);
+    } catch {
+      signal.throwIfAborted();
+      adapter.assertRequestOwnership(ownership, request);
+      runtime.respondDynamicTool(request.id, false, "DSH tool image result is unavailable.");
+      return;
+    }
+    signal.throwIfAborted();
     adapter.assertRequestOwnership(ownership, request);
-    runtime.respondDynamicTool(request.id, !result.isError, toolResultText(result));
+    runtime.respondDynamicTool(request.id, !result.isError, content);
     return;
   }
   runtime.respondDynamicTool(request.id, false, `Unknown Codex app tool ${tool}.`);
@@ -175,6 +190,24 @@ function toolResultText(result) {
     return typeof result.value === "string" ? result.value : JSON.stringify(result.value);
   }
   return result.isError ? (result.error?.message ?? "DSH tool failed") : "DSH tool completed.";
+}
+
+async function toolResultContent(result, attachments, signal) {
+  if (!(result.content ?? []).some(block => block?.type === "image")) return toolResultText(result);
+  const content = [];
+  for (const block of result.content) {
+    if (block?.type === "image") {
+      const stored = await attachments.readImage(block.attachment, signal);
+      content.push({
+        type: "inputImage",
+        imageUrl: `data:${stored.ref.mediaType};base64,${Buffer.from(stored.data).toString("base64")}`,
+      });
+    } else {
+      const text = block?.type === "text" ? block.text : JSON.stringify(block);
+      if (text) content.push({ type: "inputText", text });
+    }
+  }
+  return content;
 }
 
 function requestedTool(params = {}) {

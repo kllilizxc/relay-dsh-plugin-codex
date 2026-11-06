@@ -11,9 +11,9 @@ export function createCodexExecutionPlugin(config = {}) {
   return definePlugin({
     manifest: {
       id: "relay.execution.codex",
-      version: "1.0.0",
+      version: "1.1.0",
       provides: {
-        [CODEX_EXECUTION_CAPABILITY]: "1.0.0",
+        [CODEX_EXECUTION_CAPABILITY]: "1.1.0",
         [CODEX_TERMINAL_CAPABILITY]: "1.0.0",
       },
       optional: { "relay.logging.v1": "^1.0.0" },
@@ -52,11 +52,21 @@ export class CodexRuntimeController extends EventEmitter {
     this.desiredCommand = undefined;
     this.logger = console;
     this.onReload = null;
+    this.idleTimeoutMs = config.idleTimeoutMs ?? 30_000;
+    this.idleTimer = null;
+    this.parking = null;
+    this.catalog = [];
+    this.standbyStatus = null;
+    this.usedConfiguredClient = false;
+    this.modelRefresh = null;
   }
 
   async start(command) {
-    if (this.started) return this.ready;
+    if (this.closed) throw notStartedError();
+    if (this.parking) await this.parking;
+    if (this.current) return this.ready;
     this.started = true;
+    this.standbyStatus = null;
     this.desiredCommand = command;
     const entry = this.createCandidate(command, this.createClient(command));
     this.current = entry;
@@ -64,6 +74,10 @@ export class CodexRuntimeController extends EventEmitter {
     this.attach(entry);
     try {
       await entry.ready;
+      entry.initialized = true;
+      this.catalog = structuredClone(entry.runtime.models);
+      this.standbyStatus = null;
+      this.scheduleIdle();
     } catch (error) {
       await entry.runtime.close().catch(() => {});
       throw error;
@@ -76,7 +90,15 @@ export class CodexRuntimeController extends EventEmitter {
 
   async reload(command) {
     this.desiredCommand = command;
+    if (this.parking) await this.parking;
     if (!this.started || this.closed) return;
+    if (!this.current) {
+      await this.start(command);
+      this.onReload?.({ command, models: this.listModels() });
+      this.emit("reloaded", { command });
+      return command;
+    }
+    clearTimeout(this.idleTimer);
     if (this.reloadPromise) return this.reloadPromise;
     let succeeded = false;
     this.reloadPromise = this.processReload().then((result) => {
@@ -84,6 +106,7 @@ export class CodexRuntimeController extends EventEmitter {
       return result;
     }).finally(() => {
       this.reloadPromise = null;
+      this.scheduleIdle();
       if (succeeded && !this.closed && this.desiredCommand !== this.current?.command) {
         void this.reload(this.desiredCommand).catch((error) => this.logReloadFailure(error));
       }
@@ -103,6 +126,7 @@ export class CodexRuntimeController extends EventEmitter {
     const candidate = await this.startCandidate(command, this.createClient(command));
     try {
       candidate.runtime.adoptStateFrom(previous.runtime);
+      candidate.retained = previous.retained;
       this.detach(previous);
       this.current = candidate;
       this.ready = candidate.ready;
@@ -121,6 +145,7 @@ export class CodexRuntimeController extends EventEmitter {
     const entry = this.createCandidate(command, client);
     try {
       await entry.ready;
+      entry.initialized = true;
       return entry;
     } catch (error) {
       await entry.runtime.close().catch(() => {});
@@ -131,11 +156,14 @@ export class CodexRuntimeController extends EventEmitter {
   createCandidate(command, client) {
     const runtime = new CodexSessionRuntime({ client, cwd: this.cwd });
     const ready = runtime.initialize();
-    return { command, client, runtime, ready };
+    return { command, client, runtime, ready, users: 0, retained: false, initialized: false };
   }
 
   createClient(command) {
-    if (this.config.client && !this.current) return this.config.client;
+    if (this.config.client && !this.usedConfiguredClient) {
+      this.usedConfiguredClient = true;
+      return this.config.client;
+    }
     if (typeof this.config.clientFactory === "function") {
       return this.config.clientFactory(command);
     }
@@ -143,8 +171,10 @@ export class CodexRuntimeController extends EventEmitter {
   }
 
   attach(entry) {
+    const changed = () => this.scheduleIdle();
     const forward = (event) => (...args) => this.emit(event, ...args);
     entry.forwarders = [
+      [entry.runtime, "change", changed],
       [entry.runtime, "activity", forward("activity")],
       [entry.runtime, "request", forward("request")],
       [entry.runtime, "change", forward("change")],
@@ -162,6 +192,8 @@ export class CodexRuntimeController extends EventEmitter {
   async close() {
     if (this.closed) return;
     this.closed = true;
+    clearTimeout(this.idleTimer);
+    if (this.parking) await this.parking;
     if (this.current) {
       this.current.runtime.emit("change");
       this.detach(this.current);
@@ -177,10 +209,80 @@ export class CodexRuntimeController extends EventEmitter {
     this.emit("change");
   }
 
+  // Catalog discovery stays eager; browsing it never wakes a parked child.
   whenReady() { return this.ready ?? Promise.reject(notStartedError()); }
-  status() { return this.current?.runtime.status() ?? initialUnavailableStatus(); }
-  listModels() { return structuredClone(this.current?.runtime.models ?? []); }
-  refreshModels() { return this.current.runtime.refreshModels(); }
+  status() { return this.standbyStatus ?? this.current?.runtime.status() ?? initialUnavailableStatus(); }
+  listModels() { return structuredClone(this.current?.runtime.models ?? this.catalog); }
+
+  /** Share one metadata refresh; invoke owns wake-up and protects against idle teardown. */
+  refreshModels() {
+    if (this.modelRefresh) return this.modelRefresh;
+    const operation = this.invoke("refreshModels", []).then(() => {
+      this.catalog = this.listModels();
+      return this.listModels();
+    }).catch(error => {
+      this.logger.warn?.(`Codex model refresh failed; keeping the last catalog: ${error?.message ?? error}`);
+      return this.listModels();
+    }).finally(() => {
+      if (this.modelRefresh === operation) this.modelRefresh = null;
+    });
+    this.modelRefresh = operation;
+    return operation;
+  }
+
+  scheduleIdle() {
+    clearTimeout(this.idleTimer);
+    const entry = this.current;
+    // A supplied single-use client has no replacement factory. Native Threads and
+    // opaque terminal calls retain their process; their state cannot be inferred
+    // from a completed RPC or an idle Turn.
+    if (this.closed || this.parking || this.reloadPromise || !entry?.initialized
+      || entry.users || entry.retained || this.idleTimeoutMs <= 0
+      || (this.config.client && !this.config.clientFactory)
+      || entry.client.pending?.size || entry.runtime.status().state !== "connected" || !entry.runtime.isReloadSafe()) return;
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      if (this.current !== entry || this.closed || this.reloadPromise || entry.users
+        || entry.retained || entry.client.pending?.size || entry.runtime.status().state !== "connected" || !entry.runtime.isReloadSafe()) return;
+      // The gate closes synchronously. New operations await the old child's full
+      // shutdown before sharing exactly one replacement initialization.
+      this.parking = this.park(entry).finally(() => { this.parking = null; });
+      void this.parking.catch(error => this.logReloadFailure(error));
+    }, this.idleTimeoutMs);
+    this.idleTimer.unref?.();
+  }
+
+  async park(entry) {
+    await entry.runtime.close();
+    this.catalog = structuredClone(entry.runtime.models);
+    this.standbyStatus = {
+      ...entry.runtime.status(), state: "standby", code: "CODEX_APP_SERVER_STANDBY",
+      message: "Codex is ready and will start when needed.", action: null, changedAt: Date.now(),
+    };
+    this.detach(entry);
+    this.current = null;
+    this.emit("connectionStatus", this.standbyStatus);
+    this.emit("change");
+  }
+
+  async invoke(method, args, { client = false, retain = false } = {}) {
+    clearTimeout(this.idleTimer);
+    if (this.parking) await this.parking;
+    if (this.closed) throw notStartedError();
+    if (!this.current) await this.start(this.desiredCommand);
+    if (this.closed) throw notStartedError();
+    const entry = this.current;
+    entry.users++;
+    // Mark before sending: an unknown response must never authorize teardown.
+    if (retain) entry.retained = true;
+    try {
+      await entry.ready;
+      return await (client ? entry.client : entry.runtime)[method](...args);
+    } finally {
+      entry.users--;
+      this.scheduleIdle();
+    }
+  }
   async listSkills(cwd) {
     const result = await this.request("skills/list", { cwds: [cwd], forceReload: true });
     return result.data.flatMap(entry => entry.skills).filter(skill => skill.enabled)
@@ -193,19 +295,20 @@ export class CodexRuntimeController extends EventEmitter {
     if (session) Object.assign(session, structuredClone(patch));
     return Boolean(session);
   }
-  listWorkspaceThreads(...args) { return this.current.runtime.listWorkspaceThreads(...args); }
-  readThread(...args) { return this.current.runtime.readThread(...args); }
-  createSession(...args) { return this.current.runtime.createSession(...args); }
-  forkSession(...args) { return this.current.runtime.forkSession(...args); }
-  resumeSession(...args) { return this.current.runtime.resumeSession(...args); }
-  applyTrustedPolicy(...args) { return this.current.runtime.applyTrustedPolicy(...args); }
-  sendMessage(...args) { return this.current.runtime.sendMessage(...args); }
-  interruptTurn(...args) { return this.current.runtime.interruptTurn(...args); }
-  releaseSession(...args) { return this.current.runtime.releaseSession(...args); }
+  listWorkspaceThreads(...args) { return this.invoke("listWorkspaceThreads", args); }
+  readThread(...args) { return this.invoke("readThread", args); }
+  createSession(...args) { return this.invoke("createSession", args, { retain: true }); }
+  forkSession(...args) { return this.invoke("forkSession", args, { retain: true }); }
+  resumeSession(...args) { return this.invoke("resumeSession", args, { retain: true }); }
+  applyTrustedPolicy(...args) { return this.invoke("applyTrustedPolicy", args, { retain: true }); }
+  sendMessage(...args) { return this.invoke("sendMessage", args, { retain: true }); }
+  interruptTurn(...args) { return this.invoke("interruptTurn", args, { retain: true }); }
+  releaseSession(...args) { return this.invoke("releaseSession", args, { retain: true }); }
   resolveRequest(...args) { return this.current.runtime.resolveRequest(...args); }
   respondDynamicTool(...args) { return this.current.runtime.respondDynamicTool(...args); }
   rejectRequest(...args) { return this.current.runtime.rejectRequest(...args); }
-  request(...args) { return this.current.client.request(...args); }
+  request(...args) { return this.invoke("request", args, { client: true }); }
+  terminalRequest(...args) { return this.invoke("request", args, { client: true, retain: true }); }
   subscribeActivity(listener) { return subscribe(this, "activity", listener); }
   subscribeRequest(listener) { return subscribe(this, "request", listener); }
   subscribeStatus(listener) { return subscribe(this, "connectionStatus", listener); }
@@ -275,7 +378,7 @@ function executionCapability(runtime) {
 function terminalCapability(client) {
   return Object.freeze({
     whenReady: () => client.whenReady(),
-    request: client.request.bind(client),
+    request: client.terminalRequest.bind(client),
     subscribeNotification: listener => client.subscribeNotification(listener),
   });
 }

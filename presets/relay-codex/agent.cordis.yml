@@ -1,3 +1,5 @@
-# Codex owns the model context, tools, sandbox, and approvals. Relay's host
-# adapter binds this otherwise-empty DSH presentation Session to App Server.
-[]
+# Codex owns execution. Native timed questions give async Codex messages the
+# same persistent cards and late-reply path as other DSH conversations.
+- name: '@deepseek-ai/dsh-tool-ask-user'
+  config:
+    mode: timed

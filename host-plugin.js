@@ -4,7 +4,7 @@ import { isVolatile } from "@deepseek-ai/cosmokit";
 import { PluginHost } from "./internal/plugin-sdk.mjs";
 import { CodexRuntimeController, createCodexExecutionPlugin } from "./plugin.mjs";
 import { createDshCodexPlugin } from "./dsh-plugin.js";
-import { installManagedPreset } from "./preset.js";
+import { installCodexPresets } from "./preset.js";
 export const name = "relay-dsh-plugin-codex";
 export const inject = [
   "agents", "approval", "attachments", "llm", "sessions", "sessionPersistence", "tools", "typert",
@@ -27,7 +27,7 @@ export async function apply(ctx, config = {}) {
     ctx.on("loader/volatile-update", () => {
       void controller.reload(currentCommand()).catch(error => controller.logReloadFailure(error));
     });
-    await installManagedPreset(fileURLToPath(new URL("../presets/relay-codex", import.meta.url)), "relay-codex");
+    await installCodexPresets(ctx, fileURLToPath(new URL("../presets/relay-codex", import.meta.url)));
     await host.activate([
       createCodexExecutionPlugin({
         ...config.codex, command, controller, args: config.codexArgs,

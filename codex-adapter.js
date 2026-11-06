@@ -6,11 +6,12 @@ import { createHash } from "node:crypto";
 import { createMessage, createToolResultMessage, LlmAdapter, LlmError, projectFilesToText } from "@deepseek-ai/dsh-llm";
 import { CODEX_ACTIVITY_TOOL } from "./codex-activity-wire.mjs";
 
-import { importCodexGeneratedImage, importCodexViewedImage, importCodexMcpImage } from "./codex-image.js";
+import { importCodexGeneratedImage, importCodexViewedImage, importCodexMcpImage, importCodexDynamicToolImage } from "./codex-image.js";
 import { materializeCodexAttachment } from "./codex-image-input.js";
 import { CODEX_APP_DYNAMIC_TOOLS, codexDshToolSurface } from "./codex-tools.js";
 import { rebindRequiredStatus } from "./connection-status.mjs";
 import { CODEX_EXECUTION_GUIDANCE } from "./execution-guidance.mjs";
+import { appendAsyncQuestion, isAsyncMessage, isAsyncQuestion, supportsAsyncQuestions } from "./codex-questions.mjs";
 import { nativeToolsRestricted, threadInstructions } from "./native-tool-policy.mjs";
 
 export const CODEX_PRESET = "relay-codex";
@@ -790,6 +791,8 @@ export class CodexDshAdapter extends LlmAdapter {
 
     let turnId = null;
     const state = createStreamState();
+    state.asyncQuestionsEnabled = supportsAsyncQuestions(options.tools);
+    state.bindingEpoch = this.bindingEpochs.get(sessionId) ?? 0;
     const step = events.findLast(event => event.type === "step/start");
     const turn = events.findLast(event => event.type === "turn/start");
     state.location = { turn: turn?.data.turn ?? 1, step: step?.data.step ?? 1 };
@@ -806,24 +809,35 @@ export class CodexDshAdapter extends LlmAdapter {
       let completedTurn = null;
       while (!completedTurn) {
         const message = await queue.next();
+        options.signal?.throwIfAborted();
         const params = message.params ?? {};
         if (params.turnId && params.turnId !== turnId) continue;
         if (message.method === "turn/completed") {
           if (params.turn?.id !== turnId) continue;
           for (const item of params.turn.items ?? []) {
-            for (const chunk of await this.completeItem(agent, threadId, turnId, item, state)) yield chunk;
+            options.signal?.throwIfAborted();
+            for (const chunk of await this.completeItem(agent, threadId, turnId, item, state)) {
+              options.signal?.throwIfAborted();
+              yield chunk;
+            }
           }
           completedTurn = params.turn;
           break;
         }
-        for (const chunk of await this.projectActivity(agent, threadId, turnId, message, state)) yield chunk;
+        for (const chunk of await this.projectActivity(agent, threadId, turnId, message, state)) {
+          options.signal?.throwIfAborted();
+          yield chunk;
+        }
       }
 
+      options.signal?.throwIfAborted();
       for (const block of state.blocks.values()) {
+        options.signal?.throwIfAborted();
         if (block.closed) continue;
         block.closed = true;
         yield { type: "block-end", index: block.index, block: { type: block.type, text: block.text } };
       }
+      options.signal?.throwIfAborted();
       if (completedTurn.status === "failed") {
         yield {
           type: "finish",
@@ -995,6 +1009,7 @@ export class CodexDshAdapter extends LlmAdapter {
       return textDelta(state, params.itemId, "reasoning", params.delta ?? "");
     }
     if (message.method === "item/agentMessage/delta") {
+      if (state.asyncMessageItems.has(params.itemId)) return [];
       return textDelta(state, params.itemId, "text", params.delta ?? "");
     }
     if (message.method === "item/codeModeShell/outputDelta") {
@@ -1010,6 +1025,7 @@ export class CodexDshAdapter extends LlmAdapter {
       return [];
     }
     if (message.method === "item/started") {
+      if (state.asyncQuestionsEnabled && isAsyncMessage(params.item)) state.asyncMessageItems.add(params.item.id);
       if (params.item?.type === "agentMessage" && params.item.phase) {
         state.textPhases.set(params.item.id, params.item.phase);
       }
@@ -1032,6 +1048,11 @@ export class CodexDshAdapter extends LlmAdapter {
       return completeTextItem(state, item.id, "reasoning", reasoningText(item));
     }
     if (item.type === "agentMessage") {
+      if (state.asyncQuestionsEnabled && isAsyncQuestion(item)) {
+        appendAsyncQuestion(agent, threadId, turnId, item, state.location);
+        const streamed = state.blocks.get(item.id);
+        return streamed ? completeTextItem(state, item.id, "text", streamed.text) : [];
+      }
       if (item.phase) state.textPhases.set(item.id, item.phase);
       return completeTextItem(state, item.id, "text", item.text ?? "");
     }
@@ -1041,24 +1062,28 @@ export class CodexDshAdapter extends LlmAdapter {
       this.appendActivity(agent, threadId, turnId, withCommandOutput(state, key, item), "completed", state);
       return [];
     }
-    if (isCodexActivityItem(item)) this.appendActivity(agent, threadId, turnId, item, "completed", state);
-    if (item.type === "mcpToolCall" && item.status === "completed") {
-      const content = Array.isArray(item.result?.content) ? item.result.content : [];
+    const viewedImage = item.type === "imageGeneration" || item.type === "imageView";
+    if (isCodexActivityItem(item) && !viewedImage) this.appendActivity(agent, threadId, turnId, item, "completed", state);
+    if ((item.type === "mcpToolCall" || item.type === "dynamicToolCall") && item.status === "completed"
+      && (item.type !== "dynamicToolCall" || item.success === true)) {
+      const dynamic = item.type === "dynamicToolCall";
+      const rawContent = dynamic ? item.contentItems : item.result?.content;
+      const content = Array.isArray(rawContent) ? rawContent : [];
       const images = content.map((entry, contentIndex) => ({ entry, contentIndex }))
-        .filter(({ entry }) => entry?.type === "image");
+        .filter(({ entry }) => entry?.type === (dynamic ? "inputImage" : "image"));
       if (!this.attachments || images.length === 0) return [];
       const chunks = [];
       for (const { entry, contentIndex } of images) {
         const index = state.nextIndex++;
         try {
-          const attachment = await importCodexMcpImage(entry, item.id, contentIndex, this.attachments);
+          const attachment = await (dynamic ? importCodexDynamicToolImage : importCodexMcpImage)(entry, item.id, contentIndex, this.attachments);
           chunks.push(
             { type: "block-start", index, blockType: "image" },
             { type: "block-end", index, block: { type: "image", attachment } },
           );
         } catch (error) {
           const reason = imagePreviewFailureReason(error);
-          this.logger.warn?.("Codex MCP image preview unavailable", {
+          this.logger.warn?.(dynamic ? "Codex tool image preview unavailable" : "Codex MCP image preview unavailable", {
             threadId,
             turnId,
             itemId: item.id,
@@ -1068,14 +1093,23 @@ export class CodexDshAdapter extends LlmAdapter {
           });
           chunks.push(
             { type: "block-start", index, blockType: "text" },
-            { type: "block-end", index, block: { type: "text", text: `MCP image preview unavailable: ${item.server}/${item.tool}.` } },
+            { type: "block-end", index, block: { type: "text", text: dynamic
+              ? `Tool image preview unavailable: ${item.tool}.`
+              : `MCP image preview unavailable: ${item.server}/${item.tool}.` } },
           );
         }
       }
       return chunks;
     }
     if (item.type === "imageGeneration" || item.type === "imageView") {
-      if (!this.attachments) return [];
+      if (!this.attachments) {
+        this.appendActivity(agent, threadId, turnId, item, "completed", state);
+        return [];
+      }
+      const ownsImage = () => this.agents.get(String(agent.id)) === agent
+        && this.links.get(String(agent.id)) === threadId
+        && (this.bindingEpochs.get(String(agent.id)) ?? 0) === state.bindingEpoch;
+      if (!ownsImage()) return [];
       const roots = [
         resolve(agent.session.header.cwd ?? process.cwd()),
         resolve(homedir(), ".codex", "generated_images"),
@@ -1085,12 +1119,16 @@ export class CodexDshAdapter extends LlmAdapter {
         const attachment = item.type === "imageGeneration"
           ? await importCodexGeneratedImage(item, roots, this.attachments)
           : await importCodexViewedImage(item.path, this.attachments);
+        if (!ownsImage()) return [];
+        this.appendActivity(agent, threadId, turnId, item, "completed", state, [attachment]);
         return [
           { type: "block-start", index, blockType: "image" },
           { type: "block-end", index, block: { type: "image", attachment } },
         ];
       } catch (error) {
+        if (!ownsImage()) return [];
         const label = basename(item.path ?? item.savedPath ?? `codex-${item.id}`);
+        this.appendActivity(agent, threadId, turnId, { ...item, output: `Image preview unavailable: ${label}.` }, "completed", state);
         const reason = imagePreviewFailureReason(error);
         this.logger.warn?.("Codex image preview unavailable", {
           threadId,
@@ -1108,7 +1146,7 @@ export class CodexDshAdapter extends LlmAdapter {
     return [];
   }
 
-  appendActivity(agent, threadId, turnId, item, phase, state) {
+  appendActivity(agent, threadId, turnId, item, phase, state, images = []) {
     const id = activityItemId(item);
     if (!id) return;
     const previous = state.activityItems.get(id) ?? {};
@@ -1140,7 +1178,7 @@ export class CodexDshAdapter extends LlmAdapter {
         ...state.location,
         message: createToolResultMessage({
           callId,
-          content: [{ type: "text", text: payload.activity.output ?? payload.activity.title }],
+          content: [{ type: "text", text: payload.activity.output ?? payload.activity.title }, ...images.map(attachment => ({ type: "image", attachment }))],
           isError: payload.activity.status === "error",
         }),
         meta: { codexActivity: payload },
@@ -1317,9 +1355,9 @@ class ActivityQueue {
   }
 
   next() {
+    if (this.signal?.aborted) return Promise.reject(this.signal.reason ?? new Error("aborted"));
     if (this.values.length) return Promise.resolve(this.values.shift());
     if (this.closed) return Promise.reject(new Error("Codex activity stream closed"));
-    if (this.signal?.aborted) return Promise.reject(this.signal.reason ?? new Error("aborted"));
     return new Promise((resolve, reject) => {
       const waiter = { resolve, reject };
       this.waiters.push(waiter);
@@ -1353,6 +1391,9 @@ function createStreamState() {
     nextIndex: 0,
     blocks: new Map(),
     textPhases: new Map(),
+    asyncQuestionsEnabled: false,
+    bindingEpoch: 0,
+    asyncMessageItems: new Set(),
     completed: new Set(),
     commandKeys: new Map(),
     commandSources: new Map(),
@@ -1594,7 +1635,7 @@ async function latestUserInput(messages, attachments, signal) {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message?.role !== "user") continue;
-    if (message.source?.kind !== "user" && !isRelayActivation(message.source)) continue;
+    if (message.source?.kind !== "user" && message.source?.kind !== "user-question-reply" && !isRelayActivation(message.source)) continue;
     // Relay's stream hook bypasses DSH's final file projection. Codex runs on
     // the host, so its selected input uses the attachment store's host paths.
     const content = projectFilesToText([message], ref => attachments?.fileHostPath?.(ref))[0].content ?? [];
@@ -1659,8 +1700,7 @@ function auxiliaryInput(messages) {
     const text = (message?.content ?? [])
       .filter((block) => block.type === "text")
       .map((block) => block.text)
-      .join("\n")
-      .trim();
+      .join("\n");
     return text ? `${message.role ?? "user"}: ${text}` : "";
   }).filter(Boolean).join("\n\n");
 }

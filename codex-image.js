@@ -44,6 +44,22 @@ export async function importCodexMcpImage(content, itemId, contentIndex, attachm
   });
 }
 
+/** Import current App Server dynamic-tool media without fetching remote URLs. */
+export async function importCodexDynamicToolImage(content, itemId, contentIndex, attachments) {
+  const matched = String(content?.imageUrl ?? "").match(/^data:(image\/(?:png|jpeg|webp|gif));base64,(.+)$/s);
+  if (!matched) throw new Error("Codex dynamic tool image must be a supported image data URL");
+  const data = decodeImageBase64(matched[2]);
+  const mediaType = detectImageMediaType(data);
+  if (!mediaType) throw new Error("unsupported or malformed Codex image data");
+  if (mediaType !== matched[1]) throw new Error("Declared image type does not match its bytes.");
+  const label = String(itemId ?? "result").replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 80) || "result";
+  return attachments.saveImage({
+    data,
+    mediaType,
+    name: `codex-dynamic-${label}-${contentIndex + 1}.${extensionFor(mediaType)}`,
+  });
+}
+
 export function detectImageMediaType(data) {
   if (!data || data.length < 3) return null;
   if (hasBytes(data, 0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) {

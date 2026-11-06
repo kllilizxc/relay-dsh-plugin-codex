@@ -250,13 +250,16 @@ export class CodexAppServerClient extends EventEmitter {
     const child = this.process;
     this.process = null;
     this.failAll(new Error("codex app-server process stopped"));
-    child.kill("SIGTERM");
+    if (child.exitCode !== null || child.signalCode !== null) return;
     await new Promise((resolve) => {
-      const timer = setTimeout(resolve, 1_000);
+      // A wake must not create a replacement while the old child still owns
+      // its native resources. Escalate a stuck shutdown, then await real exit.
+      const timer = setTimeout(() => child.kill("SIGKILL"), 1_000);
       child.once("exit", () => {
         clearTimeout(timer);
         resolve();
       });
+      child.kill("SIGTERM");
     });
   }
 

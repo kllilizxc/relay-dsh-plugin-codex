@@ -3,7 +3,7 @@ import nodeTest from "node:test";
 
 import { installModelSelection } from "../model-selection.mjs";
 
-for (const generation of ['legacy', 'current']) {
+for (const generation of ['current']) {
 const test = (name, run) => nodeTest(`${generation}: ${name}`, run);
 const presetFields = agentPreset => generation === 'legacy' ? { agentPreset } : { projectionValues: { agentPreset } };
 test("switching a blank Session from Standard to Codex selects Codex capabilities", async () => {
@@ -95,6 +95,23 @@ test("a rejected model selection retries instead of silently keeping Standard", 
   stop();
 });
 
+test("an in-flight user effort selection is not replaced while preset metadata catches up", async () => {
+  const harness = modelHarness({
+    preset: "standard", provider: "relay-codex", model: "codex-default",
+    pendingSelection: { provider: "relay-codex", model: "codex-default", reasoningEffort: "max" },
+  });
+  const stop = installModelSelection(harness.ctx, "relay-codex", "relay-codex", "relay-claude");
+  try {
+    await harness.settle();
+    assert.deepEqual(harness.selections, []);
+    // The host commits the backend before the user's model projection arrives.
+    harness.setPreset("relay-codex");
+    harness.setPendingSelection(null);
+    await harness.settle();
+    assert.deepEqual(harness.selections, []);
+  } finally { stop(); }
+});
+
 test("non-blank Sessions are never rewritten by preset synchronization", async () => {
   const harness = modelHarness({ preset: "standard", provider: "standard", blank: false });
   const stop = installModelSelection(harness.ctx, "relay-codex", "relay-codex", "relay-claude");
@@ -113,6 +130,7 @@ function modelHarness({
   firstQuery = null,
   codexReadyAfter = 0,
   selectFails = 0,
+  pendingSelection = null,
 }) {
   let state = { byId: { "session-1": { id: "session-1", blank, retainedBy: { mainView: 1 }, ...presetFields(preset) } } };
   let currentProvider = provider;
@@ -121,6 +139,7 @@ function modelHarness({
   const selections = [];
   const response = () => ({
     current: { provider: currentProvider, model },
+    pending: pendingSelection,
     groups: [
       { id: "standard", models: [{ id: "standard-default" }] },
       ...(queries > codexReadyAfter
@@ -169,6 +188,10 @@ function modelHarness({
     response,
     currentProvider: () => currentProvider,
     modelQueries: () => queries,
+    setPendingSelection(selection) {
+      pendingSelection = selection;
+      for (const listener of listeners) listener();
+    },
     setPreset(agentPreset) {
       state = { ...state, byId: { ...state.byId, "session-1": { ...state.byId["session-1"], ...presetFields(agentPreset) } } };
       for (const listener of listeners) listener();

@@ -49,6 +49,9 @@ export function installModelSelection(
       const directory = modelDirectory(ctx, id);
       const models = await directory.load();
       if (!currentTarget(id, target)) return;
+      // The model menu owns its in-flight choice. Preset metadata can lag the
+      // host's switch; another selection here would supersede the user's result.
+      if (models.pending != null) return;
       if (!models.current) {
         retry(id, target);
         return;

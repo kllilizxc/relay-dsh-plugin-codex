@@ -672,12 +672,12 @@ export class CodexSessionRuntime extends EventEmitter {
     return { resolved: true };
   }
 
-  respondDynamicTool(requestId, success, text) {
+  respondDynamicTool(requestId, success, content) {
     const key = String(requestId);
     if (!this.pendingRequests.has(key)) throw new Error(`unknown pending request ${requestId}`);
     this.client.respond(requestId, {
       success,
-      contentItems: [{ type: "inputText", text: String(text) }],
+      contentItems: Array.isArray(content) ? content : [{ type: "inputText", text: String(content) }],
     });
     this.pendingRequests.delete(key);
     this.emitChange();

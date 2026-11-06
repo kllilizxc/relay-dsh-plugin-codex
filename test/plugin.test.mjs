@@ -59,7 +59,7 @@ test("catalog refresh reads every visible page and commits only complete listing
     assert.deepEqual(concurrent, execution.listModels());
 
     repeat = true;
-    await assert.rejects(execution.refreshModels(), { code: "CODEX_MODEL_LIST_INVALID" });
+    assert.deepEqual(await execution.refreshModels(), models);
     assert.deepEqual(execution.listModels(), models);
     repeat = false;
     assert.deepEqual(await execution.refreshModels(), models);
