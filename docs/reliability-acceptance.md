@@ -47,6 +47,14 @@ generated `lib/` artifacts, package contents, and this matrix agree.
 
 ## Commands
 
+Signed-in manual checks must use dedicated `DSH_HOME`, `CODEX_HOME`, and
+`RELAY_CODEX_LINK_PATH` values, plus isolated application data and workspaces.
+The first two variables do not redirect Relay's default
+`~/.relay/codex-dsh-links.json` store. Keep the explicit link-store path unchanged
+across restarts and never share it with another Host during a check. A missing
+source binding correctly fails closed; do not reconstruct ownership from assistant
+history to make a fork fixture pass.
+
 ```bash
 npm ci --ignore-scripts
 DSH_ROOT=/path/to/deepseek-harness npm run verify

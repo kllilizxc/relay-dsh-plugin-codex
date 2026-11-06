@@ -621,7 +621,7 @@ test("ephemeral auxiliary threads carry isolated instructions and are released",
   assert.equal(start.params.experimentalRawEvents, false);
   assert.equal(start.params.personality, null);
   assert.equal(start.params.baseInstructions, "Generate a title.");
-  assert.equal(start.params.developerInstructions, "Do not call tools.");
+  assert.match(start.params.developerInstructions, /^Do not call tools\.\n\nThis session's host grant disables native Codex tools/);
   assert.deepEqual(start.params.dynamicTools, []);
   assert.equal(start.params.permissions, ":read-only");
   assert.deepEqual(start.params.runtimeWorkspaceRoots, []);

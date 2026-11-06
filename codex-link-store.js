@@ -12,8 +12,13 @@ export class CodexLinkStore {
   }
 
   set(sessionId, record) {
-    this.records.set(String(sessionId), structuredClone(record));
-    this.persist();
+    const key = String(sessionId), previous = this.records.get(key);
+    this.records.set(key, structuredClone(record));
+    try { this.persist(); }
+    catch (error) {
+      if (previous === undefined) this.records.delete(key); else this.records.set(key, previous);
+      throw error;
+    }
   }
 
   delete(sessionId) {

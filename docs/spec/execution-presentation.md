@@ -101,3 +101,36 @@ visible legacy activity between projected segments also disables takeover; its
 native row must not be crossed by moving later prose to the process anchor.
 Missing tool-call history, unrepresented tool types, and mixed providers likewise
 retain native presentation until the projection has sufficient evidence.
+
+## Optional host tool presentation
+
+A host may provide the optional client service `conversationToolPresentation` with
+`subscribe(listener)` and `hideToolRows(sessionId)`. When it returns true for a
+session, the grouped Codex process omits duplicate `dsh / workbench` activity
+rows while preserving streamed prose, other activities, and the native tool
+records and their accessory slots. The service can appear or disappear at
+runtime. Without it, or for sessions it does not select, existing presentation
+is unchanged. This policy is visual only and does not change tool authority,
+execution, stream delivery or persistence.
+
+The same optional service may supply
+`projectAssistantText(sessionId, turn, text)` to disclose only user-facing
+assistant text. The grouped process applies it in its shared projection before
+publishing both turn Location data and chat View nodes, so answer selection,
+copying and rendering consume the same disclosed text. The projection receives
+cumulative text across provider items, including live prefixes; it does not
+rewrite raw reducer state, events, persisted history or model input. The host
+owns any private-text syntax and per-turn authorization. Session identity comes
+from the owning assembler, never the currently selected conversation; an
+unknown owner is passed to the host explicitly. A host that supplies this
+policy must invalidate its display projections when its scope becomes known.
+Without the optional projector, literal assistant text remains unchanged.
+
+The grouped renderer is an independent assistant-text path: `ProcessItems` in
+`CodexProcessView.tsx` sends each published text segment to `MarkdownText`.
+Filtering only native `assistant-step` rows cannot protect that renderer.
+`test/notebook-grouped-renderer.spec.tsx` exercises the installed presentation
+slot through its real process component and Markdown boundary, including every
+live prefix of both private block forms, a tag divided between provider items,
+settled history, and unchanged ordinary text. Its no-projector control reproduces
+the raw-segment disclosure in older clients.

@@ -4,6 +4,7 @@ import { readCodexModelList } from "./app-server-client.mjs";
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { nativeToolsRestricted, restrictedNativeConfig, threadInstructions } from "./native-tool-policy.mjs";
 import {
   codexConnectionFailure,
   codexOperationalError,
@@ -36,6 +37,7 @@ export class CodexSessionRuntime extends EventEmitter {
     this.bypassHookTrust = client.bypassHookTrust === true;
     this.sessions = new Map();
     this.appliedThreadSettings = new Map();
+    this.appliedThreadInstructions = new Map();
     this.pendingRequests = new Map();
     this.codeModeCalls = new Map();
     this.turnBackgroundBaselines = new Map();
@@ -180,27 +182,20 @@ export class CodexSessionRuntime extends EventEmitter {
     developerInstructions,
     ephemeral,
     toolFree = false,
+    nativeToolAllowlist,
     serviceName = "relay_codex",
     threadSource = RELAY_THREAD_SOURCE,
   } = {}) {
-    const selectedSandbox = normalizeSandbox(sandbox);
+    const restricted = nativeToolsRestricted(nativeToolAllowlist) || toolFree;
+    const selectedSandbox = restricted ? "read-only" : normalizeSandbox(sandbox);
+    if (restricted) approvalPolicy = "never";
     const selectedModel = model ?? this.models.find((candidate) => candidate.isDefault)?.id ?? null;
     const selectedEffort = effort
       ?? this.models.find((candidate) => candidate.id === selectedModel)?.defaultReasoningEffort
       ?? null;
+    const selectedInstructions = threadInstructions(developerInstructions, restricted, toolFree ? [] : nativeToolAllowlist);
     const config = newThreadConfig(this.bypassHookTrust);
-    if (toolFree) {
-      // dynamicTools excludes only host tools. Native MCP/plugin tools are inherited
-      // separately and otherwise start a process set for every short auxiliary call.
-      const effective = await this.client.request("config/read", { cwd, includeLayers: false });
-      config.mcp_servers = Object.fromEntries(
-        Object.keys(effective.config.mcp_servers ?? {}).map(name => [name, { enabled: false }]),
-      );
-      config.plugins = Object.fromEntries(
-        Object.keys(effective.config.plugins ?? {}).map(name => [name, { enabled: false }]),
-      );
-      config["features.code_mode_host"] = false;
-    }
+    if (restricted) Object.assign(config, await restrictedNativeConfig(this.client, cwd, toolFree ? [] : nativeToolAllowlist));
     const result = await this.client.request("thread/start", compactObject({
       cwd,
       model: selectedModel,
@@ -219,7 +214,7 @@ export class CodexSessionRuntime extends EventEmitter {
       mockExperimentalField: null,
       experimentalRawEvents: !toolFree,
       dynamicTools,
-      developerInstructions: developerInstructions ?? null,
+      developerInstructions: selectedInstructions,
     }));
     if (ephemeral === true && result.thread?.ephemeral !== true) {
       const error = new Error("Codex App Server did not confirm a temporary thread; no turn was started.");
@@ -236,12 +231,15 @@ export class CodexSessionRuntime extends EventEmitter {
       approvalPolicy,
       cwd,
       ephemeral: Boolean(result.thread.ephemeral ?? ephemeral),
+      nativeToolsRestricted: restricted,
+      nativeToolAllowlist: restricted ? [...(toolFree ? [] : nativeToolAllowlist ?? [])] : undefined,
     });
     this.recordNativeSettings(session, result, {
       model: selectedModel,
       effort: selectedEffort,
       multiAgentMode: DEFAULT_MULTI_AGENT_MODE,
     });
+    this.appliedThreadInstructions.set(session.id, { source: developerInstructions, effective: selectedInstructions });
     if (!session.ephemeral) this.selectedSessionId = session.id;
     this.emitChange();
     return publicSession(session);
@@ -258,14 +256,20 @@ export class CodexSessionRuntime extends EventEmitter {
     developerInstructions,
     ephemeral = false,
     threadSource = RELAY_THREAD_SOURCE,
+    nativeToolAllowlist,
   } = {}) {
     if (!threadId?.trim()) throw new Error("threadId is required");
     if (!lastTurnId?.trim()) throw new Error("lastTurnId is required for a safe Codex fork");
-    const selectedSandbox = normalizeSandbox(sandbox);
+    const restricted = nativeToolsRestricted(nativeToolAllowlist);
+    const selectedSandbox = restricted ? "read-only" : normalizeSandbox(sandbox);
+    if (restricted) approvalPolicy = "never";
+    const config = newThreadConfig(this.bypassHookTrust);
+    if (restricted) Object.assign(config, await restrictedNativeConfig(this.client, cwd, nativeToolAllowlist));
     const selectedModel = model ?? this.models.find((candidate) => candidate.isDefault)?.id ?? null;
     const selectedEffort = effort
       ?? this.models.find((candidate) => candidate.id === selectedModel)?.defaultReasoningEffort
       ?? null;
+    const selectedInstructions = threadInstructions(developerInstructions, restricted, nativeToolAllowlist);
     const result = await this.client.request("thread/fork", compactObject({
       threadId,
       lastTurnId,
@@ -273,13 +277,13 @@ export class CodexSessionRuntime extends EventEmitter {
       model: selectedModel,
       modelProvider: null,
       // Preserve the source thread's service tier when forking.
-      config: newThreadConfig(this.bypassHookTrust),
+      config,
       approvalsReviewer: "user",
       approvalPolicy,
       permissions: permissionProfile(selectedSandbox),
       runtimeWorkspaceRoots: selectedSandbox === "read-only" ? [] : [cwd],
       baseInstructions: baseInstructions ?? null,
-      developerInstructions: developerInstructions ?? null,
+      developerInstructions: selectedInstructions,
       ephemeral,
       threadSource,
     }));
@@ -293,31 +297,89 @@ export class CodexSessionRuntime extends EventEmitter {
       approvalPolicy: result.approvalPolicy ?? approvalPolicy,
       cwd: result.cwd ?? cwd,
       ephemeral: Boolean(result.thread.ephemeral ?? ephemeral),
+      nativeToolsRestricted: restricted,
+      nativeToolAllowlist: restricted ? [...nativeToolAllowlist] : undefined,
     });
     this.recordNativeSettings(session, result, {
       model: session.model,
       effort: session.effort,
       multiAgentMode: DEFAULT_MULTI_AGENT_MODE,
     });
+    this.appliedThreadInstructions.set(session.id, { source: developerInstructions, effective: selectedInstructions });
     if (!session.ephemeral) this.selectedSessionId = session.id;
     this.emitChange();
     return publicSession(session);
   }
 
+  /** Materialize a trusted policy update; turn metadata alone leaves old root text in resumed history. */
+  async applyTrustedPolicy(threadId, text) {
+    const session = this.requireSession(threadId);
+    if (session.turns.some(turn => turn.status === "inProgress")) throw new Error("Cannot update host policy during a running Codex turn");
+    const current = await this.client.request("thread/read", { threadId, includeTurns: false });
+    if (current.thread.status?.type !== "idle") throw new Error("Cannot update host policy unless the Codex thread is idle");
+    await this.client.request("thread/inject_items", { threadId, items: [{
+      type: "message", role: "developer", content: [{ type: "input_text", text }],
+    }] });
+  }
+
   async selectSession(threadId) {
     const existing = this.requireSession(threadId);
-    return this.resumeSession(threadId, existing);
+    return this.resumeSession(threadId, {
+      ...existing,
+      ...(existing.nativeToolsRestricted ? { nativeToolAllowlist: existing.nativeToolAllowlist ?? [] } : {}),
+    });
   }
 
   async resumeSession(threadId, defaults = {}) {
     if (!threadId?.trim()) throw new Error("threadId is required");
+    const restricted = nativeToolsRestricted(defaults.nativeToolAllowlist);
+    const previous = this.sessions.get(threadId);
+    const previousInstructions = this.appliedThreadInstructions.get(threadId);
+    const sourceInstructions = Object.hasOwn(defaults, "developerInstructions")
+      ? defaults.developerInstructions : previousInstructions?.source;
+    const selectedInstructions = threadInstructions(sourceInstructions, restricted, defaults.nativeToolAllowlist);
+    const applyInstructions = Object.hasOwn(defaults, "developerInstructions") || restricted || previous?.nativeToolsRestricted;
+    const instructionsChanged = applyInstructions && selectedInstructions !== previousInstructions?.effective;
+    // Thread overrides belong to an in-memory Codex session. Unload before a
+    // policy transition so resume resolves current user/project configuration;
+    // removing the policy must not force-enable any user's disabled features.
+    if (restricted || previous?.nativeToolsRestricted || instructionsChanged) {
+      if (previous?.turns.some(turn => turn.status === "inProgress")) {
+        throw new Error("Cannot change Codex thread instructions or native tool policy during a running Codex turn");
+      }
+      const unloaded = await this.client.request("thread/unsubscribe", { threadId });
+      if (unloaded.status !== "unsubscribed" && unloaded.status !== "notLoaded") {
+        throw new Error(`Cannot apply native tool policy: thread/unsubscribe returned ${unloaded.status}`);
+      }
+      // A later setup failure must not leave a cache claiming this Thread is
+      // loaded. The adapter's existing retry path will resume the same ID.
+      this.sessions.delete(threadId);
+      this.appliedThreadSettings.delete(threadId);
+      this.appliedThreadInstructions.delete(threadId);
+    }
+    const config = {
+      ...(this.bypassHookTrust ? { bypass_hook_trust: true } : {}),
+      ...(restricted ? await restrictedNativeConfig(this.client, defaults.cwd ?? this.cwd, defaults.nativeToolAllowlist) : {}),
+    };
     const result = await this.client.request("thread/resume", {
       threadId,
       cwd: defaults.cwd ?? this.cwd,
-      ...(this.bypassHookTrust ? { config: { bypass_hook_trust: true } } : {}),
+      ...(Object.keys(config).length ? { config } : {}),
+      ...(applyInstructions ? { developerInstructions: selectedInstructions } : {}),
+      ...(restricted || previous?.nativeToolsRestricted ? {
+        approvalPolicy: restricted ? "never" : defaults.approvalPolicy ?? "on-request",
+        permissions: permissionProfile(restricted ? "read-only" : defaults.sandbox),
+        runtimeWorkspaceRoots: restricted ? [] : [defaults.cwd ?? this.cwd],
+      } : {}),
       ...(defaults.dynamicTools === undefined ? {} : { dynamicTools: defaults.dynamicTools }),
     });
-    const session = this.upsertThread(result.thread, defaults);
+    const session = this.upsertThread(result.thread, {
+      ...defaults,
+      ...(restricted ? { sandbox: "read-only", approvalPolicy: "never" } : {}),
+    });
+    session.nativeToolsRestricted = restricted;
+    session.nativeToolAllowlist = restricted ? [...defaults.nativeToolAllowlist] : undefined;
+    if (applyInstructions) this.appliedThreadInstructions.set(threadId, { source: sourceInstructions, effective: selectedInstructions });
     this.recordNativeSettings(session, result, {
       model: session.model,
       effort: session.effort,
@@ -339,13 +401,23 @@ export class CodexSessionRuntime extends EventEmitter {
     sandbox,
     approvalPolicy,
     reasoningSummary = "auto",
+    nativeToolAllowlist,
+    developerInstructions,
   } = {}) {
     const session = this.requireSession(threadId);
     if (!text?.trim() && localImages.length === 0) throw new Error("message text or image input is required");
     const nextModel = model ?? session.model;
     const nextEffort = effort ?? session.effort;
-    const nextSandbox = normalizeSandbox(sandbox ?? session.sandbox);
-    const nextApprovalPolicy = approvalPolicy ?? session.approvalPolicy;
+    const requestedRestricted = nativeToolsRestricted(nativeToolAllowlist);
+    if (nativeToolAllowlist !== undefined && (!session.nativeToolsRestricted ||
+      nativeToolAllowlist.length !== (session.nativeToolAllowlist ?? []).length ||
+      nativeToolAllowlist.some(tool => !(session.nativeToolAllowlist ?? []).includes(tool)))) {
+      throw new Error("Native tool grant changed; resume the thread before starting a turn");
+    }
+    const restricted = requestedRestricted || session.nativeToolsRestricted;
+    const nextSandbox = restricted ? "read-only" : normalizeSandbox(sandbox ?? session.sandbox);
+    const nextApprovalPolicy = restricted ? "never" : approvalPolicy ?? session.approvalPolicy;
+    const turnInstructions = threadInstructions(developerInstructions, restricted, nativeToolAllowlist ?? session.nativeToolAllowlist);
     const input = codexInput(text ?? "", localImages);
     const attachments = localImages.map(codexAttachment);
     const visualizationRoot = codexVisualizationRoot(threadId);
@@ -394,7 +466,7 @@ export class CodexSessionRuntime extends EventEmitter {
         settings: {
           model: nextModel,
           reasoning_effort: nextEffort,
-          developer_instructions: null,
+          developer_instructions: turnInstructions,
         },
       },
       attachments,
@@ -544,6 +616,7 @@ export class CodexSessionRuntime extends EventEmitter {
   forgetSession(threadId) {
     this.sessions.delete(threadId);
     this.appliedThreadSettings.delete(threadId);
+    this.appliedThreadInstructions.delete(threadId);
     for (const [requestId, request] of this.pendingRequests) {
       if (request.params?.threadId === threadId) this.pendingRequests.delete(requestId);
     }
@@ -657,6 +730,7 @@ export class CodexSessionRuntime extends EventEmitter {
     }
     this.sessions = new Map([...previous.sessions].filter(([, session]) => !session.ephemeral));
     this.appliedThreadSettings = new Map([...previous.appliedThreadSettings].filter(([id]) => this.sessions.has(id)));
+    this.appliedThreadInstructions = new Map([...previous.appliedThreadInstructions].filter(([id]) => this.sessions.has(id)));
     this.selectedSessionId = this.sessions.has(previous.selectedSessionId) ? previous.selectedSessionId : null;
     this.diagnostics = [...previous.diagnostics];
     this.emitChange();
@@ -763,6 +837,11 @@ export class CodexSessionRuntime extends EventEmitter {
   handleServerRequest(request) {
     const key = String(request.id);
     this.pendingRequests.set(key, structuredClone(request));
+    const threadId = request.params?.threadId ?? request.params?.conversationId;
+    if (this.sessions.get(threadId)?.nativeToolsRestricted && !isDshDynamicToolRequest(request)) {
+      this.rejectRequest(request.id, new Error("This session's host grant disables native Codex tool interactions"));
+      return;
+    }
     this.emit("request", structuredClone(request));
     this.emitChange();
   }
@@ -825,6 +904,8 @@ export class CodexSessionRuntime extends EventEmitter {
       effort: defaults.effort,
       sandbox: defaults.sandbox,
       approvalPolicy: defaults.approvalPolicy,
+      nativeToolsRestricted: defaults.nativeToolsRestricted,
+      nativeToolAllowlist: defaults.nativeToolAllowlist,
     }));
     this.sessions.set(session.id, session);
     return session;
@@ -946,6 +1027,15 @@ export class CodexSessionRuntime extends EventEmitter {
       } });
     }
   }
+}
+
+function isDshDynamicToolRequest(request) {
+  if (request.method !== "item/tool/call" && request.method !== "item/dynamicTool/call") return false;
+  const params = request.params ?? {};
+  const tool = typeof params.tool === "object" ? params.tool : null;
+  const name = typeof params.tool === "string" ? params.tool : tool?.name ?? params.name ?? "";
+  const namespace = params.namespace ?? tool?.namespace ?? /^([^.:]+)[.:]/.exec(name)?.[1];
+  return namespace === "dsh";
 }
 
 function sandboxPolicy(sandbox, writableRoots) {

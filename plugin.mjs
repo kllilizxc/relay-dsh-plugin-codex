@@ -198,6 +198,7 @@ export class CodexRuntimeController extends EventEmitter {
   createSession(...args) { return this.current.runtime.createSession(...args); }
   forkSession(...args) { return this.current.runtime.forkSession(...args); }
   resumeSession(...args) { return this.current.runtime.resumeSession(...args); }
+  applyTrustedPolicy(...args) { return this.current.runtime.applyTrustedPolicy(...args); }
   sendMessage(...args) { return this.current.runtime.sendMessage(...args); }
   interruptTurn(...args) { return this.current.runtime.interruptTurn(...args); }
   releaseSession(...args) { return this.current.runtime.releaseSession(...args); }
@@ -259,6 +260,7 @@ function executionCapability(runtime) {
     createSession: runtime.createSession.bind(runtime),
     forkSession: runtime.forkSession.bind(runtime),
     resumeSession: runtime.resumeSession.bind(runtime),
+    applyTrustedPolicy: runtime.applyTrustedPolicy.bind(runtime),
     sendMessage: runtime.sendMessage.bind(runtime),
     interruptTurn: runtime.interruptTurn.bind(runtime),
     releaseSession: runtime.releaseSession.bind(runtime),

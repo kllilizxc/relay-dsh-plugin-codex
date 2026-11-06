@@ -159,6 +159,106 @@ test("execution guidance is scoped to new native threads and may be disabled", a
   }
 });
 
+test("trusted native grants exclude Relay builtins and reconfigure existing threads without persisting policy", async () => {
+  const runtime = new FakeRuntime();
+  const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve() });
+  const agent = fakeAgent(); adapter.attachAgent(agent);
+  const options = { provider: "relay-codex", model: "codex-test", sessionId: agent.id,
+    tools: [{ name: "workbench", description: "host", parameters: { type: "object" } }],
+    messages: [{ role: "user", source: { kind: "user" }, content: [{ type: "text", text: "Start" }] }] };
+  await collect(adapter.stream(options));
+  await collect(adapter.stream({ ...options, nativeToolAllowlist: [] }));
+  assert.equal(runtime.resumed, 1);
+  assert.deepEqual(runtime.sessions.get("thread-1").nativeToolAllowlist, []);
+  assert.deepEqual(runtime.sessions.get("thread-1").dynamicTools.map(tool => tool.name), ["dsh"]);
+  assert.deepEqual(runtime.sent.at(-1).message.nativeToolAllowlist, []);
+  assert.equal(Object.hasOwn(adapter.configuration(agent.id), "nativeToolAllowlist"), false);
+  await collect(adapter.stream(options));
+  assert.equal(runtime.resumed, 2);
+  assert.equal(runtime.sessions.get("thread-1").nativeToolAllowlist, undefined);
+  assert.ok(runtime.sessions.get("thread-1").dynamicTools.some(tool => tool.name === "codex_app"));
+  const sent = runtime.sent.length;
+  await assert.rejects(collect(adapter.stream({ ...options, nativeToolAllowlist: ["shell"] })), /partial native tool grants/);
+  assert.equal(runtime.sent.length, sent);
+});
+
+test("business turns preserve current trusted system instructions without promoting runtime references", async () => {
+  for (const nativeToolAllowlist of [undefined, []]) {
+    const runtime = new FakeRuntime();
+    const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve() });
+    const agent = fakeAgent(); adapter.attachAgent(agent);
+    const options = { provider: "relay-codex", model: "codex-test", sessionId: agent.id, nativeToolAllowlist,
+      system: "one-shot policy",
+      messages: [
+        { role: "system", source: { kind: "system-prompt" }, content: [{ type: "text", text: "current assembled policy" }] },
+        { role: "user", source: { kind: "runtime-context", form: "snapshot", sections: [] }, content: [{ type: "text", text: "untrusted note content" }] },
+        { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "actual request" }] },
+      ] };
+    await collect(adapter.stream(options));
+    assert.equal(runtime.sent[0].message.developerInstructions, "one-shot policy\n\ncurrent assembled policy");
+    assert.ok(runtime.createdConfig.developerInstructions.endsWith("one-shot policy\n\ncurrent assembled policy"));
+    assert.equal(runtime.sent[0].message.text, "actual request");
+    await collect(adapter.stream({ ...options, system: undefined, messages: [
+      { role: "system", source: { kind: "system-prompt" }, content: [{ type: "text", text: "updated assembled policy" }] },
+      options.messages.at(-1),
+    ] }));
+    assert.equal(runtime.sent[1].message.developerInstructions, "updated assembled policy");
+    assert.ok(runtime.sessions.get("thread-1").developerInstructions.endsWith("updated assembled policy"));
+    assert.equal(runtime.sessions.get("thread-1").developerInstructions.includes("current assembled policy"), false);
+    assert.equal(runtime.created, 1, "current instructions update the turn without replacing the thread");
+    await collect(adapter.stream({ ...options, system: undefined, messages: [options.messages.at(-1)] }));
+    assert.equal(runtime.sessions.get("thread-1").developerInstructions.includes("updated assembled policy"), false);
+    assert.equal(runtime.created, 1);
+  }
+});
+
+test("trusted policy receipts ignore changed notebook/runtime data but materialize a changed fixed policy", async () => {
+  const runtime = new FakeRuntime(), adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve() });
+  const agent = fakeAgent(); adapter.attachAgent(agent);
+  const options = { provider: "relay-codex", model: "codex-test", sessionId: agent.id, nativeToolAllowlist: [] };
+  const messages = (policy, notebook) => [
+    { role: "system", source: { kind: "system-prompt" }, content: [{ type: "text", text: policy }] },
+    { role: "user", source: { kind: "worka", marker: "workbench/context/home-notebook/revision" }, content: [{ type: "text", text: notebook }] },
+    { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "Current request" }] },
+  ];
+  await collect(adapter.stream({ ...options, messages: messages("FIXED_POLICY", "PRIVATE_NOTEBOOK_ONE") }));
+  await collect(adapter.stream({ ...options, messages: messages("FIXED_POLICY", "PRIVATE_NOTEBOOK_TWO") }));
+  assert.equal(runtime.policyUpdates?.length ?? 0, 0);
+  await collect(adapter.stream({ ...options, messages: messages("UPDATED_FIXED_POLICY", "PRIVATE_NOTEBOOK_THREE") }));
+  assert.equal(runtime.policyUpdates.length, 1);
+  assert.match(runtime.policyUpdates[0].text, /UPDATED_FIXED_POLICY/);
+  assert.doesNotMatch(runtime.policyUpdates[0].text, /PRIVATE_NOTEBOOK|Current request/);
+  assert.equal(runtime.created, 1);
+});
+
+test("a restricted business turn keeps its trusted prompt and dispatches its DSH handoff tool", async () => {
+  const calls = [];
+  const runtime = new FakeRuntime();
+  const agent = fakeAgent({ tools: { async execute(input) {
+    calls.push(input);
+    return { isError: false, content: [{ type: "text", text: "accepted" }] };
+  } } });
+  const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve() }); adapter.attachAgent(agent);
+  await collect(adapter.stream({ provider: "relay-codex", model: "codex-test", sessionId: agent.id, nativeToolAllowlist: [],
+    tools: [{ name: "workbench", description: "host", parameters: { type: "object" } }],
+    messages: [
+      { role: "system", source: { kind: "system-prompt" }, content: [{ type: "text", text: "trusted routing policy" }] },
+      { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "please do it" }] },
+    ] }));
+  const interactions = new InteractionRuntime();
+  await handleCodexServerRequest({ agents: { get: id => id === agent.id ? agent : null } }, {
+    adapter, runtime: interactions, request: request("handoff", "item/dynamicTool/call", {
+      namespace: "dsh", name: "workbench", arguments: JSON.stringify({ method: "session.send", input: { newSession: true, requestId: "handoff", content: "do it" } }),
+    }),
+  });
+  assert.equal(runtime.sent[0].message.developerInstructions, "trusted routing policy");
+  assert.ok(runtime.createdConfig.developerInstructions.endsWith("trusted routing policy"));
+  assert.deepEqual(runtime.createdConfig.dynamicTools.map(tool => tool.name), ["dsh"]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].arguments.method, "session.send");
+  assert.equal(interactions.dynamic.at(-1).success, true);
+});
+
 test("native comparison mode excludes DSH tools and guidance without changing permissions or thread continuity", async () => {
   const runtime = new FakeRuntime();
   const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve(), executionMode: "native" });
@@ -2839,6 +2939,11 @@ class FakeRuntime extends EventEmitter {
     this.resumed += 1;
     this.sessions.set(threadId, { id: threadId, turns: [], ...config });
     return this.sessions.get(threadId);
+  }
+
+  async applyTrustedPolicy(threadId, text) {
+    this.policyUpdates ??= [];
+    this.policyUpdates.push({ threadId, text });
   }
 
   async forkSession(threadId, config) {

@@ -1,11 +1,11 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { ChevronRight, ChevronDown, LoaderCircle, Brain, TriangleAlert } from 'lucide-react'
 import { MarkdownText, DisclosureRow } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ChatNodeOwnerProps, TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { PropsRuntime, PropsRenderFactories } from '@deepseek-ai/dsh-client-ui-slots'
 import { describeActivity, summarizeActivities } from '../../codex-activity-labels.mjs'
 import { ActivityIcon, ActivityRow } from './CodexActivityView.tsx'
-import { canTakeOverCodexProcess, codexProcessAnswerSegments, type CodexProcessSegment, type CodexProcessState } from './codex-process.ts'
+import { canTakeOverCodexProcess, codexProcessAnswerSegments, type AssistantTextProjection, type CodexProcessSegment, type CodexProcessState } from './codex-process.ts'
 import { mountProcess } from './process-presence.ts'
 import { codexProducedFileMentions } from './process-files.ts'
 import css from './CodexProcessView.module.css'
@@ -15,8 +15,15 @@ type ProcessProps = PropsRuntime<'conversation.chat.node', 'relay-codex-process'
 type Item = { key: string; activities: CodexProcessSegment[] } | CodexProcessSegment
 const markdownLabels = { code: { copyLabel: 'Copy', copiedLabel: 'Copied' }, footnotes: 'Footnotes' }
 const compatibleMarkdownLabels = { labels: markdownLabels, codeLabels: markdownLabels.code }
+export interface ConversationToolPresentation {
+  subscribe(listener: () => void): () => void
+  hideToolRows(sessionId: string): boolean
+  projectAssistantText?: AssistantTextProjection
+}
+const noSubscription = () => () => {}
 type CompatibleProcessProps = Omit<ProcessProps, 'useChat'> & {
   useChat?: ProcessProps['useChat']
+  toolPresentation?: ConversationToolPresentation
 }
 
 export function groupProcessSegments(segments: readonly CodexProcessSegment[]): Item[] {
@@ -32,15 +39,19 @@ export function groupProcessSegments(segments: readonly CodexProcessSegment[]): 
   return items
 }
 
-export function CodexProcessView({ node, sessionId, renderFactorySlot, useTurnData, useChat, useSession, openFile, loadImage, fileMentions, turnProcess }: CompatibleProcessProps) {
+export function CodexProcessView({ node, sessionId, renderFactorySlot, useTurnData, useChat, useSession, openFile, loadImage, fileMentions, turnProcess, toolPresentation }: CompatibleProcessProps) {
+  const hideToolRows = useSyncExternalStore(toolPresentation?.subscribe ?? noSubscription,
+    () => toolPresentation?.hideToolRows(sessionId) ?? false, () => false)
   // Legacy activity has no numeric turn in its payload. Its visible anchor still
   // proves an intervening native row; do not move grouped prose across that row.
   const legacyBoundary = useCompatibleChat({ useChat, useSession }, snapshot => [...snapshot.nodes.values()].some(candidate =>
     candidate.kind === 'relay-codex-activity' && candidate.anchorSeq >= (node.data.firstVisibleSeq ?? Infinity)
       && candidate.anchorSeq <= (node.data.lastSeq ?? -1)))
-  // Native compact mode controls the containing row. Yield ownership so its
-  // final assistant answer remains visible outside the folded process range.
-  const safe = canTakeOverCodexProcess(node.data) && !legacyBoundary && !turnProcess?.foldable
+  // Preserve live Relay prose when a native tool envelope makes the process
+  // foldable. After completion, native compact mode owns the final answer outside
+  // the folded process range.
+  const safe = canTakeOverCodexProcess(node.data) && !legacyBoundary
+    && (node.data.status === 'running' || !turnProcess?.foldable)
   useLayoutEffect(() => safe ? mountProcess(sessionId, node.data.turn) : undefined, [sessionId, node.data.turn, safe])
   const tail = useTurnData('turn-tail')
   const turn = node.location.kind === 'turn' || node.location.kind === 'step' ? node.location.turn : undefined
@@ -49,16 +60,17 @@ export function CodexProcessView({ node, sessionId, renderFactorySlot, useTurnDa
     const owner: TurnTailOwnerProps = { turn, seq: tail.closing.finalNode.seq, openFile }
     return codexProducedFileMentions(node.data.segments, openFile, fileMentions(owner))
   }, [turn, tail, node.data.segments, openFile, fileMentions])
-  return safe ? <ProcessBody state={node.data} renderFactorySlot={renderFactorySlot} loadImage={loadImage} fileMentions={mentions} openFile={openFile} />
+  return safe ? <ProcessBody state={node.data} renderFactorySlot={renderFactorySlot} loadImage={loadImage} fileMentions={mentions} openFile={openFile} hideToolRows={hideToolRows} />
     : <span hidden data-codex-process-fallback />
 }
 
-export function ProcessBody({ state, renderFactorySlot, loadImage, fileMentions, openFile }: {
+export function ProcessBody({ state, renderFactorySlot, loadImage, fileMentions, openFile, hideToolRows = false }: {
   state: CodexProcessState
   renderFactorySlot: PropsRenderFactories['renderFactorySlot']
   loadImage: ChatNodeOwnerProps['loadImage']
   fileMentions?: ReturnType<ChatNodeOwnerProps['fileMentions']>
   openFile?: ChatNodeOwnerProps['openFile']
+  hideToolRows?: boolean
 }) {
   const [expanded, setExpanded] = useState<boolean | null>(null)
   const [now, setNow] = useState(Date.now())
@@ -67,10 +79,12 @@ export function ProcessBody({ state, renderFactorySlot, loadImage, fileMentions,
     const timer = setInterval(() => { setNow(Date.now()) }, 1000)
     return () => { clearInterval(timer) }
   }, [state.status])
+  const segments = hideToolRows ? state.segments.filter(segment => !(segment.kind === 'activity'
+    && segment.activity?.type === 'dynamicToolCall' && segment.activity.title === 'dsh / workbench')) : state.segments
   const answerKeys = new Set(codexProcessAnswerSegments(state).map(segment => segment.key))
-  const finalIndex = state.segments.findIndex(segment => answerKeys.has(segment.key))
-  const process = finalIndex < 0 ? state.segments : state.segments.slice(0, finalIndex)
-  const answer = finalIndex < 0 ? [] : state.segments.slice(finalIndex)
+  const finalIndex = segments.findIndex(segment => answerKeys.has(segment.key))
+  const process = finalIndex < 0 ? segments : segments.slice(0, finalIndex)
+  const answer = finalIndex < 0 ? [] : segments.slice(finalIndex)
   const deliverables = process.filter(segment => segment.kind === 'image')
   const hasProcess = process.some(segment => segment.kind !== 'text' || Boolean(segment.text?.trim()))
   const open = expanded ?? (state.status === 'running' || (answer.length === 0 && deliverables.length === 0))

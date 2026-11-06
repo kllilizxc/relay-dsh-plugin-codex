@@ -1,6 +1,7 @@
 import { sessionEvents, toolCallId as ToolCallId } from "./dsh-compat.mjs";
 import { homedir } from "node:os";
 import { basename, resolve } from "node:path";
+import { createHash } from "node:crypto";
 
 import { createMessage, createToolResultMessage, LlmAdapter, LlmError, projectFilesToText } from "@deepseek-ai/dsh-llm";
 import { CODEX_ACTIVITY_TOOL } from "./codex-activity-wire.mjs";
@@ -10,6 +11,7 @@ import { materializeCodexAttachment } from "./codex-image-input.js";
 import { CODEX_APP_DYNAMIC_TOOLS, codexDshToolSurface } from "./codex-tools.js";
 import { rebindRequiredStatus } from "./connection-status.mjs";
 import { CODEX_EXECUTION_GUIDANCE } from "./execution-guidance.mjs";
+import { nativeToolsRestricted, threadInstructions } from "./native-tool-policy.mjs";
 
 export const CODEX_PRESET = "relay-codex";
 export const CODEX_PROVIDER = "relay-codex";
@@ -51,6 +53,7 @@ export class CodexDshAdapter extends LlmAdapter {
     this.agents = new Map();
     this.dshToolNames = new Map();
     this.appliedDynamicToolSignatures = new Map();
+    this.trustedPolicies = new Map();
     this.rebindStates = new Map();
     this.bindingEpochs = new Map();
     this.subagentBindings = new Map();
@@ -62,6 +65,9 @@ export class CodexDshAdapter extends LlmAdapter {
     this.detachedEphemeralSessions = new Set();
     for (const [sessionId, record] of linkStore?.entries() ?? []) {
       if (record.threadId) this.links.set(sessionId, record.threadId);
+      if (typeof record.trustedPolicy?.threadId === "string" && record.trustedPolicy.threadId === record.threadId && /^[a-f0-9]{64}$/.test(record.trustedPolicy.hash ?? "")) {
+        this.trustedPolicies.set(sessionId, structuredClone(record.trustedPolicy));
+      }
       this.settings.set(sessionId, record.config);
       this.bindingModes.set(sessionId, record.bindingMode === "imported" ? "imported" : "native");
       if (record.bindingMode === "imported" && IMPORT_STATES.includes(record.importState)) {
@@ -216,7 +222,8 @@ export class CodexDshAdapter extends LlmAdapter {
     return structuredClone(next);
   }
 
-  async ensureThread(sessionId, dynamicTools = this.dynamicTools, inheritedProvenance = null) {
+  async ensureThread(sessionId, dynamicTools = this.dynamicTools, inheritedProvenance = null, nativeToolAllowlist, systemInstructions) {
+    nativeToolsRestricted(nativeToolAllowlist);
     const key = String(sessionId);
     const blockedFork = this.settings.get(key)?.ephemeralForkSource;
     if (blockedFork) {
@@ -230,15 +237,51 @@ export class CodexDshAdapter extends LlmAdapter {
       throw rebindRequiredError(blocked);
     }
     const operation = (!this.links.has(key) && inheritedProvenance?.threadId
-      ? this.forkInheritedThread(key, dynamicTools, inheritedProvenance)
-      : this.createOrResumeThread(key, dynamicTools)).finally(() => {
+      ? this.forkInheritedThread(key, dynamicTools, inheritedProvenance, nativeToolAllowlist, systemInstructions)
+      : this.createOrResumeThread(key, dynamicTools, nativeToolAllowlist, systemInstructions)).finally(() => {
       this.pendingThreads.delete(key);
     });
     this.pendingThreads.set(key, operation);
     return operation;
   }
 
-  async forkInheritedThread(sessionId, dynamicTools, provenance) {
+  threadSettings(sessionId, dynamicTools, nativeToolAllowlist, systemInstructions) {
+    const settings = { ...this.configuration(sessionId), dynamicTools, nativeToolAllowlist };
+    const base = Object.hasOwn(settings, "developerInstructions") ? settings.developerInstructions : this.executionGuidance;
+    if (Object.hasOwn(settings, "developerInstructions") || systemInstructions !== undefined || base) {
+      settings.developerInstructions = [base, systemInstructions]
+        .filter(text => typeof text === "string" && text.trim()).join("\n\n") || null;
+    }
+    return settings;
+  }
+
+  policyFor(settings) {
+    const restricted = nativeToolsRestricted(settings.nativeToolAllowlist);
+    if (!Object.hasOwn(settings, "developerInstructions")) return null;
+    const effective = threadInstructions(settings.developerInstructions, restricted, settings.nativeToolAllowlist);
+    const text = "Current host-provided instructions supersede earlier host-provided instructions. User and project instructions remain in effect subject to this host policy.\n\n"
+      + (effective || "No additional host-provided instructions apply.");
+    return { text, hash: createHash("sha256").update(text).digest("hex") };
+  }
+
+  async ensureTrustedPolicy(sessionId, threadId, settings, initiallyApplied = false) {
+    const policy = this.policyFor(settings);
+    if (!policy) { if (initiallyApplied) this.persistLink(sessionId); return; }
+    const { text, hash } = policy;
+    const previous = this.trustedPolicies.get(sessionId);
+    if (previous?.threadId === threadId && previous.hash === hash) return;
+    if (!initiallyApplied) await this.runtime.applyTrustedPolicy(threadId, text);
+    // A lost acknowledgement can repeat identical developer text; injection is
+    // content-idempotent, not a task write or an exactly-once provider operation.
+    this.trustedPolicies.set(sessionId, { threadId, hash });
+    try { this.persistLink(sessionId); }
+    catch (error) {
+      if (previous) this.trustedPolicies.set(sessionId, previous); else this.trustedPolicies.delete(sessionId);
+      throw error;
+    }
+  }
+
+  async forkInheritedThread(sessionId, dynamicTools, provenance, nativeToolAllowlist, systemInstructions) {
     const sourceSessionId = this.dshSessionForThread(provenance.threadId);
     if (!provenance.turnId
       || !sourceSessionId
@@ -263,9 +306,7 @@ export class CodexDshAdapter extends LlmAdapter {
         "This temporary DSH Session cannot inherit another Codex thread's history.");
     }
     await this.ready;
-    const settings = { ...this.configuration(sessionId), dynamicTools };
-    const signature = JSON.stringify(dynamicTools);
-    const sourceSignature = this.appliedDynamicToolSignatures.get(sourceSessionId);
+    const settings = this.threadSettings(sessionId, dynamicTools, nativeToolAllowlist, systemInstructions);
     let forked;
     try {
       forked = await this.runtime.forkSession(provenance.threadId, {
@@ -292,6 +333,8 @@ export class CodexDshAdapter extends LlmAdapter {
     this.bumpBindingEpoch(sessionId);
     this.persistLink(sessionId);
 
+    const signature = JSON.stringify({ dynamicTools, nativeToolAllowlist, developerInstructions: settings.developerInstructions });
+    const sourceSignature = this.appliedDynamicToolSignatures.get(sourceSessionId);
     if (sourceSignature !== signature) {
       try {
         await this.runtime.resumeSession(forked.id, settings);
@@ -300,6 +343,8 @@ export class CodexDshAdapter extends LlmAdapter {
       }
     }
     this.appliedDynamicToolSignatures.set(sessionId, signature);
+    // The selected fork point can predate a policy appended to its parent.
+    await this.ensureTrustedPolicy(sessionId, forked.id, settings);
     return forked.id;
   }
 
@@ -310,10 +355,10 @@ export class CodexDshAdapter extends LlmAdapter {
     return rebindRequiredError(status, cause);
   }
 
-  async createOrResumeThread(sessionId, dynamicTools) {
+  async createOrResumeThread(sessionId, dynamicTools, nativeToolAllowlist, systemInstructions) {
     await this.ready;
-    const settings = { ...this.configuration(sessionId), dynamicTools };
-    const signature = JSON.stringify(dynamicTools);
+    const settings = this.threadSettings(sessionId, dynamicTools, nativeToolAllowlist, systemInstructions);
+    const signature = JSON.stringify({ dynamicTools, nativeToolAllowlist, developerInstructions: settings.developerInstructions });
     const linked = this.links.get(sessionId);
     if (settings.ephemeral && this.detachedEphemeralSessions.has(sessionId)) {
       throw bindingPolicyError(sessionId, linked, "CODEX_EPHEMERAL_CONTEXT_LOST",
@@ -335,22 +380,23 @@ export class CodexDshAdapter extends LlmAdapter {
         await this.runtime.resumeSession(linked, settings);
         this.appliedDynamicToolSignatures.set(sessionId, signature);
       }
+      await this.ensureTrustedPolicy(sessionId, linked, settings);
       return linked;
     }
     if (linked) {
       try {
         await this.runtime.resumeSession(linked, settings);
-        this.appliedDynamicToolSignatures.set(sessionId, signature);
-        return linked;
       } catch (error) {
         throw persistedResumeError(sessionId, linked, error, this);
       }
+      this.appliedDynamicToolSignatures.set(sessionId, signature);
+      await this.ensureTrustedPolicy(sessionId, linked, settings);
+      return linked;
     }
     let created;
     try {
       created = await this.runtime.createSession({
         ...settings,
-        ...(this.executionGuidance ? { developerInstructions: settings.developerInstructions ?? this.executionGuidance } : {}),
       });
     } catch (error) {
       if (settings.ephemeral && error?.code === "CODEX_EPHEMERAL_UNSUPPORTED") {
@@ -367,7 +413,7 @@ export class CodexDshAdapter extends LlmAdapter {
     this.links.set(sessionId, created.id);
     this.bumpBindingEpoch(sessionId);
     this.appliedDynamicToolSignatures.set(sessionId, signature);
-    this.persistLink(sessionId);
+    await this.ensureTrustedPolicy(sessionId, created.id, settings, true);
     return created.id;
   }
 
@@ -380,6 +426,8 @@ export class CodexDshAdapter extends LlmAdapter {
       ...(this.dshOwnedTurnIds.has(sessionId)
         ? { dshTurnIds: [...this.dshOwnedTurnIds.get(sessionId)].sort() }
         : {}),
+      ...(this.trustedPolicies.get(sessionId)?.threadId === this.links.get(sessionId)
+        ? { trustedPolicy: this.trustedPolicies.get(sessionId) } : {}),
     });
   }
 
@@ -435,6 +483,7 @@ export class CodexDshAdapter extends LlmAdapter {
       bindingMode: "imported",
       importState: "committed",
       ...(ownedTurnIds ? { dshTurnIds: [...ownedTurnIds].sort() } : {}),
+      ...(this.trustedPolicies.get(oldKey)?.threadId === threadId ? { trustedPolicy: this.trustedPolicies.get(oldKey) } : {}),
     };
     this.linkStore?.replace(oldKey, newKey, replacementRecord);
 
@@ -444,6 +493,8 @@ export class CodexDshAdapter extends LlmAdapter {
     this.importStates.delete(oldKey);
     this.dshOwnedTurnIds.delete(oldKey);
     this.appliedDynamicToolSignatures.delete(oldKey);
+    const trustedPolicy = this.trustedPolicies.get(oldKey);
+    this.trustedPolicies.delete(oldKey);
 
     this.links.set(newKey, threadId);
     this.rebindStates.delete(newKey);
@@ -453,6 +504,7 @@ export class CodexDshAdapter extends LlmAdapter {
     this.bindingModes.set(newKey, "imported");
     this.importStates.set(newKey, "committed");
     if (ownedTurnIds) this.dshOwnedTurnIds.set(newKey, new Set(ownedTurnIds));
+    if (trustedPolicy?.threadId === threadId) this.trustedPolicies.set(newKey, trustedPolicy);
     return this.bindingForSession(newKey);
   }
 
@@ -668,6 +720,7 @@ export class CodexDshAdapter extends LlmAdapter {
   }
 
   async *stream(options) {
+    const restricted = nativeToolsRestricted(options.nativeToolAllowlist);
     if (options.purpose) {
       yield* this.streamAuxiliary(options);
       return;
@@ -708,11 +761,13 @@ export class CodexDshAdapter extends LlmAdapter {
       } });
     }
     const dshTools = this.executionMode === "native" ? [] : options.tools ?? [];
-    const dshToolSurface = codexDshToolSurface(dshTools, this.dynamicTools);
+    const dshToolSurface = codexDshToolSurface(dshTools, restricted ? [] : this.dynamicTools);
     const threadId = await this.ensureThread(
       sessionId,
       dshToolSurface.dynamicTools,
       inheritedCodexProvenance(options.messages),
+      options.nativeToolAllowlist,
+      trustedSystemInstructions(options),
     );
     if (this.configuration(sessionId).ephemeral
       && (this.agents.get(sessionId) !== agent || this.detachedEphemeralSessions.has(sessionId))) {
@@ -742,6 +797,8 @@ export class CodexDshAdapter extends LlmAdapter {
       const started = await this.runtime.sendMessage(threadId, {
         ...input,
         ...config,
+        nativeToolAllowlist: options.nativeToolAllowlist,
+        developerInstructions: trustedSystemInstructions(options),
         reasoningSummary: "auto",
       });
       turnId = started.id;
@@ -1553,6 +1610,17 @@ async function latestUserInput(messages, attachments, signal) {
     if (text.trim() || localImages.length > 0) return { text, localImages };
   }
   return null;
+}
+
+function trustedSystemInstructions(options) {
+  // DSH loop requests carry their assembled prompt as a system-role message;
+  // one-shot callers use options.system. Runtime snapshots and note content
+  // remain user-role reference material and must never gain this authority.
+  return [
+    options.system,
+    ...options.messages.filter(message => message.role === "system").map(message =>
+      (message.content ?? []).filter(block => block.type === "text").map(block => block.text).join("\n")),
+  ].filter(text => typeof text === "string" && text.trim()).join("\n\n") || undefined;
 }
 
 async function localImage(block, attachments, signal) {

@@ -458,7 +458,31 @@ export function replayCodexProcess(events: readonly CompatibleSessionEventLike[]
   return state
 }
 
-export function projectCodexProcess(context: ConversationNodeContext<CodexProcessState>): CodexProcessState | undefined {
+/** Optional host-owned disclosure policy. Raw events and reducer state are never rewritten. */
+export type AssistantTextProjection = (sessionId: string | undefined, turn: number, text: string) => string
+
+function projectAssistantSegments(state: CodexProcessState, sessionId: string | undefined, project: AssistantTextProjection): CodexProcessState {
+  const raw = state.segments.filter(segment => segment.kind === 'text').map(segment => segment.text ?? '').join('')
+  const text = project(sessionId, state.turn, raw)
+  if (text === raw) return state
+  let prefix = '', visibleEnd = 0
+  const segments = state.segments.map(segment => {
+    if (segment.kind !== 'text') return segment
+    prefix += segment.text ?? ''
+    const projectedPrefix = project(sessionId, state.turn, prefix)
+    // Map the host's cumulative disclosure back to the original text blocks.
+    // A withheld tag prefix can begin in one provider item and end in another.
+    let end = 0
+    while (end < projectedPrefix.length && end < text.length && projectedPrefix[end] === text[end]) end++
+    end = Math.max(visibleEnd, end)
+    const next = text.slice(visibleEnd, end)
+    visibleEnd = end
+    return next === segment.text ? segment : { ...segment, text: next }
+  })
+  return segments.every((segment, index) => segment === state.segments[index]) ? state : { ...state, segments }
+}
+
+export function projectCodexProcess(context: ConversationNodeContext<CodexProcessState>, projectAssistantText?: AssistantTextProjection): CodexProcessState | undefined {
   let state = context.state ?? replayCodexProcess(context.matches.map(match => match.event))
   if (!state) return undefined
   const location = context.start?.location ?? context.matches.find(match => match.location.kind === 'turn' || match.location.kind === 'step')?.location
@@ -469,8 +493,13 @@ export function projectCodexProcess(context: ConversationNodeContext<CodexProces
   // Evaluate before filtering: unproven visible steps are still native rows and
   // cannot be crossed by a turn-wide node anchored at the first Codex segment.
   state = withTakeoverSafety(state)
-  const segments = state.segments.filter(segment => state.ownedSteps.includes(segment.step))
-  return segments.length === state.segments.length ? state : { ...state, segments }
+  const ownedSteps = state.ownedSteps
+  const segments = state.segments.filter(segment => ownedSteps.includes(segment.step))
+  if (segments.length !== state.segments.length) state = { ...state, segments }
+  // The maintained host assembler supplies its immutable owning session. Do
+  // not substitute the currently selected session for older/cached contexts.
+  const sessionId = (context as ConversationNodeContext<CodexProcessState> & { readonly sessionId?: string }).sessionId
+  return projectAssistantText ? projectAssistantSegments(state, sessionId, projectAssistantText) : state
 }
 
 /**
@@ -486,7 +515,7 @@ export function codexProcessAnswerSegments(state: CodexProcessState): readonly C
   return last ? [last] : []
 }
 
-export const codexProcessDefinition: ConversationNodeDefinition<CodexProcessState> = {
+export const createCodexProcessDefinition = (projectAssistantText?: AssistantTextProjection): ConversationNodeDefinition<CodexProcessState> => ({
   kind: 'relay-codex-process',
   target: 'chat',
   match: currentEvent => {
@@ -518,11 +547,11 @@ export const codexProcessDefinition: ConversationNodeDefinition<CodexProcessStat
   },
   buildLocationData: (context, scope) => {
     if (scope !== 'turn') return null
-    const state = projectCodexProcess(context)
+    const state = projectCodexProcess(context, projectAssistantText)
     return state?.owned ? { kind: 'turn', turn: state.turn, key: 'relay-codex-process', value: state } : null
   },
   buildViewNode: (context): ChatConversationViewNode | null => {
-    const state = projectCodexProcess(context)
+    const state = projectCodexProcess(context, projectAssistantText)
     if (!state || !canTakeOverCodexProcess(state)) {
       const previous = context.current.get('chat') as ChatConversationViewNode | null | undefined
       return previous ? { ...previous, visibility: 'hidden', data: state ?? previous.data } : null
@@ -534,4 +563,6 @@ export const codexProcessDefinition: ConversationNodeDefinition<CodexProcessStat
       visibility: 'visible', data: state,
     }
   },
-}
+})
+
+export const codexProcessDefinition = createCodexProcessDefinition()

@@ -27,7 +27,7 @@ describe.each(['legacy', 'current'])('%s process presentation public slot wrappe
 const locale = generation === 'legacy' ? 'conversation' : 'chat'
   it('waits for native registrations and restores the exact originals on disposal', async () => {
     const harness = setup(generation)
-    expect(harness.registerProjection).toHaveBeenCalledExactlyOnceWith(codexProcessDefinition)
+    expect(harness.registerProjection).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ kind: codexProcessDefinition.kind, target: 'chat' }))
     expect(harness.core.entries(slot).map(entry => entry.options.key)).toEqual(['relay-codex-process'])
     const Assistant = () => <div>Native assistant</div>
     const Context = () => <div>Native context</div>

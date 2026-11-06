@@ -2399,6 +2399,11 @@ class FakeRuntime extends EventEmitter {
     return this.sessions.get(threadId);
   }
 
+  async applyTrustedPolicy(threadId, text) {
+    this.policyUpdates ??= [];
+    this.policyUpdates.push({ threadId, text });
+  }
+
   async forkSession(threadId, config) {
     if (this.forkError) throw this.forkError;
     this.forked.push({ threadId, config: structuredClone(config) });

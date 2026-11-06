@@ -2,8 +2,8 @@ import { useSyncExternalStore, type ComponentType } from 'react'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { ChatNodeViewProps } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { StoredEntry, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
-import { CodexProcessView } from './CodexProcessView.tsx'
-import { canTakeOverCodexProcess, codexProcessDefinition } from './codex-process.ts'
+import { CodexProcessView, type ConversationToolPresentation } from './CodexProcessView.tsx'
+import { canTakeOverCodexProcess, createCodexProcessDefinition } from './codex-process.ts'
 import { useProcessPresence } from './process-presence.ts'
 import type { AdvancedDebugSource } from './AdvancedDebug.tsx'
 import { conversationEvents } from './compatible-runtime.ts'
@@ -12,14 +12,40 @@ type CompatibleNodeProps<K extends 'assistant-step' | 'context'> = Omit<ChatNode
   t: TranslateNS<'chat'> | TranslateNS<'conversation'>
 }
 
+/** Optional host policy is independent of relay and may appear or disappear at runtime. */
+export function conversationToolPresentation(ctx: ClientContext): ConversationToolPresentation {
+  const current = () => (ctx as unknown as { get(name: string): ConversationToolPresentation | undefined }).get('conversationToolPresentation')
+  return {
+    hideToolRows: sessionId => current()?.hideToolRows(sessionId) ?? false,
+    projectAssistantText: (sessionId, turn, text) => current()?.projectAssistantText?.(sessionId, turn, text) ?? text,
+    subscribe: listener => {
+      let disposePolicy = current()?.subscribe(listener)
+      const disposeService = ctx.on('internal/service', name => {
+        if (name !== 'conversationToolPresentation') return
+        disposePolicy?.()
+        disposePolicy = current()?.subscribe(listener)
+        listener()
+      }, { global: true })
+      return () => { disposeService(); disposePolicy?.() }
+    },
+  }
+}
+
 /** Reuse only leaf registrations; child-slot authorization stays with DSH. */
 export function installProcessPresentation(ctx: ClientContext, debug: AdvancedDebugSource): void {
-  conversationEvents(ctx).register(codexProcessDefinition)
+  const toolPresentation = conversationToolPresentation(ctx)
+  const events = conversationEvents(ctx) as ReturnType<typeof conversationEvents> & {
+    registerDisplayProjection?(projection: { id: string; subscribe(listener: () => void): () => void }): () => void
+  }
+  events.register(createCodexProcessDefinition(toolPresentation.projectAssistantText))
+  // Hosts with the shared display boundary can rebuild already materialized
+  // turns when this optional service arrives, leaves, or learns their scope.
+  events.registerDisplayProjection?.({ id: 'relay-codex-host-presentation', subscribe: toolPresentation.subscribe })
   installContextPresentation(ctx, debug)
   ctx.slots.inject('conversation.chat.node', () => {
     const disposeProcess = ctx.slots.register({
       name: 'conversation.chat.node', key: 'relay-codex-process',
-    }, CodexProcessView)
+    }, props => <CodexProcessView {...props} toolPresentation={toolPresentation} />)
     let previous: StoredEntry | undefined
     let disposeAssistant: (() => void) | undefined
     const reconcile = (): void => {
