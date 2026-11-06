@@ -40,15 +40,21 @@ test("tool-free auxiliary calls cannot start inherited MCP or plugin processes",
   assert.deepEqual(client.requests[0], { method: "config/read", params: { cwd: "/workspace/project", includeLayers: false } });
 });
 
-test("ordinary tasks retain their inherited tools and do not read auxiliary config", async () => {
+for (const ephemeral of [false, true]) test(`${ephemeral ? "temporary" : "ordinary"} tasks retain tools, permissions and events without auxiliary isolation`, async () => {
   const client = new Client();
   client.configError = Error("must not read auxiliary config");
   const runtime = new CodexSessionRuntime({ client });
   const dynamicTools = [{ name: "host_tool", description: "task tool", inputSchema: {} }];
-  await runtime.createSession({ dynamicTools });
+  const session = await runtime.createSession({ dynamicTools, ephemeral, sandbox: "workspace-write", approvalPolicy: "on-request" });
   assert.deepEqual(client.requests.map(r => r.method), ["thread/start"]);
   assert.deepEqual(client.requests[0].params.config, { "features.realtime_conversation": false });
   assert.deepEqual(client.requests[0].params.dynamicTools, dynamicTools);
+  assert.equal(client.requests[0].params.ephemeral, ephemeral);
+  assert.equal(client.requests[0].params.approvalPolicy, "on-request");
+  assert.equal(client.requests[0].params.permissions, ":workspace");
+  assert.equal(client.requests[0].params.experimentalRawEvents, true);
+  assert.equal(client.requests[0].params.personality, "friendly");
+  assert.equal(session.ephemeral, ephemeral);
 });
 
 test("auxiliary isolation uses current project config rather than a cached global server list", async () => {

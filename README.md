@@ -30,6 +30,16 @@ This fork targets DSH `0.2.1-rc.2` with React 19, pinned by the peer dependency 
 
 ## Development
 
+### Temporary host maintenance sessions
+
+A host may add `relayCodexEphemeral: true` to a Relay `GenerateOptions` request with an attached DSH agent, before that session's first Codex thread is created. This creates an ephemeral Codex thread while retaining the agent's tools, effective sandbox, approvals, and activity events. The flag is a namespaced host option; do not put maintenance labels in `GenerateOptions.purpose`, which selects the separate tool-free title/compaction path.
+
+Temporary mode stays attached to the binding on later requests. Existing durable bindings cannot be converted, and temporary bindings cannot be downgraded. Detaching the agent invalidates its temporary binding immediately and releases the thread after any active turn settles; reattaching does not revive it. Relay retains the DSH-to-Codex link as a tombstone: a restart, released context, or changed tool surface fails explicitly without creating a replacement or replaying completed work. Start a new DSH session for new maintenance work.
+
+Fresh DSH subagents inherit temporary mode from a known temporary parent using DSH's stored `origin`, `parentSession`, and `isSeeded` metadata. Native Codex subagents inherit the parent's ephemeral configuration. The bundled Codex 0.166 App Server cannot resume an ephemeral thread or fork one into another DSH session. Relay rejects inherited DSH forks when either the proven parent or the requested child is temporary and persists that blocked state, including across restarts. Seeded temporary children also fail closed when no completed Codex replay marker is available. Ordinary durable DSH forks are unchanged.
+
+### Local verification
+
 The source, generated `lib/` artifacts, and focused tests are kept together. For a local build, point `DSH_ROOT` at a compatible DSH source checkout and run `npm run build`. Run only tests relevant to a change unless you explicitly intend a full verification run.
 
 This repository does not contain local session data or compatibility run logs.

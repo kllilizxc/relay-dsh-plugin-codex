@@ -58,6 +58,12 @@ export class CodexSessionRuntime extends EventEmitter {
         this.setConnectionStatus(codexConnectionFailure(error));
         this.failActiveTurns(error);
       }
+      // A new process cannot restore temporary contexts from these cached IDs.
+      // Let existing turn waiters observe failure before dropping their state.
+      this.emitChange();
+      for (const session of this.sessions.values()) {
+        if (session.ephemeral) this.forgetSession(session.id);
+      }
       this.emitChange();
     });
   }
@@ -205,16 +211,24 @@ export class CodexSessionRuntime extends EventEmitter {
       approvalPolicy,
       permissions: permissionProfile(selectedSandbox),
       runtimeWorkspaceRoots: selectedSandbox === "read-only" ? [] : [cwd],
-      personality: ephemeral ? null : "friendly",
+      personality: toolFree ? null : "friendly",
       ephemeral: ephemeral ?? null,
       baseInstructions: baseInstructions ?? null,
       serviceName,
       threadSource,
       mockExperimentalField: null,
-      experimentalRawEvents: !ephemeral,
+      experimentalRawEvents: !toolFree,
       dynamicTools,
       developerInstructions: developerInstructions ?? null,
     }));
+    if (ephemeral === true && result.thread?.ephemeral !== true) {
+      const error = new Error("Codex App Server did not confirm a temporary thread; no turn was started.");
+      error.code = "CODEX_EPHEMERAL_UNSUPPORTED";
+      error.retryable = false;
+      error.threadId = result.thread?.id;
+      if (error.threadId) await this.releaseSession(error.threadId);
+      throw error;
+    }
     const session = this.upsertThread(result.thread, {
       model: selectedModel,
       effort: selectedEffort,
@@ -523,13 +537,21 @@ export class CodexSessionRuntime extends EventEmitter {
     await this.client.request("thread/unsubscribe", { threadId }).catch((error) => {
       this.addDiagnostic(`thread/unsubscribe failed for ${threadId}: ${error.message}`);
     });
+    this.forgetSession(threadId);
+    this.emitChange();
+  }
+
+  forgetSession(threadId) {
     this.sessions.delete(threadId);
     this.appliedThreadSettings.delete(threadId);
     for (const [requestId, request] of this.pendingRequests) {
       if (request.params?.threadId === threadId) this.pendingRequests.delete(requestId);
     }
+    this.turnBackgroundBaselines.delete(threadId);
+    for (const [callId, owner] of this.codeModeCalls) {
+      if (owner.threadId === threadId) this.codeModeCalls.delete(callId);
+    }
     if (this.selectedSessionId === threadId) this.selectedSessionId = null;
-    this.emitChange();
   }
 
   async sendAndWait(threadId, message, { timeoutMs = 30 * 60_000 } = {}) {
@@ -633,9 +655,9 @@ export class CodexSessionRuntime extends EventEmitter {
     if (!previous.isReloadSafe()) {
       throw new Error("Codex runtime cannot adopt state while a turn or interaction is active");
     }
-    this.sessions = new Map(previous.sessions);
-    this.appliedThreadSettings = new Map(previous.appliedThreadSettings);
-    this.selectedSessionId = previous.selectedSessionId;
+    this.sessions = new Map([...previous.sessions].filter(([, session]) => !session.ephemeral));
+    this.appliedThreadSettings = new Map([...previous.appliedThreadSettings].filter(([id]) => this.sessions.has(id)));
+    this.selectedSessionId = this.sessions.has(previous.selectedSessionId) ? previous.selectedSessionId : null;
     this.diagnostics = [...previous.diagnostics];
     this.emitChange();
   }
@@ -650,7 +672,13 @@ export class CodexSessionRuntime extends EventEmitter {
     const threadId = params.threadId ?? params.thread?.id ?? null;
     let session = threadId ? this.sessions.get(threadId) : null;
 
-    if (method === "thread/started" && params.thread) {
+    if (method === "thread/closed" && session?.ephemeral) {
+      const error = new Error("The temporary Codex context was closed and cannot be resumed.");
+      error.code = "CODEX_EPHEMERAL_CONTEXT_LOST";
+      this.failSessionTurns(session, error);
+      this.emitChange();
+      this.forgetSession(threadId);
+    } else if (method === "thread/started" && params.thread) {
       session = this.upsertThread(params.thread, {});
     } else if (method === "thread/status/changed" && session) {
       session.status = structuredClone(params.status);
@@ -902,16 +930,20 @@ export class CodexSessionRuntime extends EventEmitter {
     this.codeModeCalls.clear();
     this.turnBackgroundBaselines.clear();
     for (const session of this.sessions.values()) {
-      for (const turn of session.turns) {
-        if (turn.status !== "inProgress") continue;
-        turn.status = "failed";
-        turn.error = { message: error.message, code: error.code };
-        session.status = { type: "idle" };
-        // Settle the DSH stream on transport loss instead of leaving it waiting.
-        this.emit("activity", { method: "turn/completed", params: {
-          threadId: session.id, turn: structuredClone(turn),
-        } });
-      }
+      this.failSessionTurns(session, error);
+    }
+  }
+
+  failSessionTurns(session, error) {
+    for (const turn of session.turns) {
+      if (turn.status !== "inProgress") continue;
+      turn.status = "failed";
+      turn.error = { message: error.message, code: error.code };
+      session.status = { type: "idle" };
+      // Settle the DSH stream on transport loss instead of leaving it waiting.
+      this.emit("activity", { method: "turn/completed", params: {
+        threadId: session.id, turn: structuredClone(turn),
+      } });
     }
   }
 }

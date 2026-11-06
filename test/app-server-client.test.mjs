@@ -165,6 +165,7 @@ test("initialization identifies DSH and advertises only implemented capabilities
     "  if (!capabilities.optOutNotificationMethods?.includes('codex/event/task_started')) process.exit(12)",
     "  if (capabilities.optOutNotificationMethods?.includes('command/exec/outputDelta')) process.exit(13)",
     "  if (capabilities.optOutNotificationMethods?.includes('rawResponseItem/completed')) process.exit(14)",
+    "  if (capabilities.optOutNotificationMethods?.includes('thread/closed')) process.exit(15)",
     "  process.stdout.write(JSON.stringify({ id: message.id, result: { userAgent: 'fixture' } }) + '\\n')",
     "})",
   ].join("\n");

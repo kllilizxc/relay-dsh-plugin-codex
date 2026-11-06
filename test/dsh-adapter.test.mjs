@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { BlockAssembler, createMessage } from "@deepseek-ai/dsh-llm";
+import { BlockAssembler, LlmError, createMessage } from "@deepseek-ai/dsh-llm";
 import { Context } from "@deepseek-ai/cordis";
 import SessionStore, { KNOWN_SESSION_EVENT_TYPES, Session, SessionId } from "@deepseek-ai/dsh-session";
 import * as JsonlSessionPersistence from "@deepseek-ai/dsh-session-persistence-jsonl";
@@ -869,6 +869,339 @@ test("automatic title generation uses an isolated ephemeral Codex thread", async
   assert.ok(mainChunks.some(chunk => chunk.type === "text-delta" && chunk.text === "done"));
   assert.equal(titleChunks.find(chunk => chunk.type === "text-delta").text, "项目文件查询");
   assert.deepEqual(activityEvents(agent).map(event => event.data.threadId), [mainCall.threadId, mainCall.threadId]);
+});
+
+test("temporary attached agents keep DSH tools, approvals, activity and live turn continuity", async () => {
+  const runtime = new SubagentActivityRuntime();
+  const toolCalls = [];
+  const agent = fakeAgent({ tools: { async execute(input) {
+    toolCalls.push(input);
+    return { content: [{ type: "text", text: "updated memory" }] };
+  } } });
+  const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve() });
+  adapter.attachAgent(agent);
+  const options = {
+    provider: "relay-codex", model: "codex-test", sessionId: agent.id,
+    messages: [{ role: "user", source: { kind: "user" }, content: [{ type: "text", text: "maintain memory" }] }],
+    tools: [{ name: "memory_update", description: "Update memory", parameters: { type: "object" } }],
+  };
+  const stream = collect(adapter.stream({ ...options, relayCodexEphemeral: true }));
+  await runtime.activityObserved.promise;
+
+  assert.equal(runtime.createdConfig.ephemeral, true);
+  assert.equal(runtime.createdConfig.toolFree, undefined);
+  assert.equal(runtime.createdConfig.sandbox, "workspace-write");
+  assert.equal(runtime.createdConfig.approvalPolicy, "on-request");
+  assert.equal(runtime.createdConfig.developerInstructions, CODEX_EXECUTION_GUIDANCE);
+  assert.deepEqual(runtime.createdConfig.dynamicTools.find(tool => tool.name === "dsh").tools.map(tool => tool.name), ["memory_update"]);
+  const interactions = new InteractionRuntime();
+  let approvals = 0;
+  const ctx = {
+    agents: { get: id => id === agent.id ? agent : null },
+    approval: { async request(input) { approvals += 1; assert.equal(input.agent, agent); return "allowed-once"; } },
+  };
+  await handleCodexServerRequest(ctx, {
+    adapter, runtime: interactions,
+    request: request("maintenance-tool", "item/dynamicTool/call", {
+      namespace: "dsh", name: "memory_update", arguments: { topic: "project" },
+    }),
+  });
+  await handleCodexServerRequest(ctx, {
+    adapter, runtime: interactions,
+    request: request("maintenance-approval", "item/commandExecution/requestApproval", {
+      itemId: "maintenance-command", command: "git status",
+    }),
+  });
+  assert.equal(toolCalls.length, 1);
+  assert.equal(toolCalls[0].agent, agent);
+  assert.equal(interactions.dynamic[0].success, true);
+  assert.equal(approvals, 1);
+  assert.equal(interactions.resolved[0].response.action, "accept");
+  runtime.emit("activity", notification("item/completed", "thread-1", "turn-1", {
+    item: { type: "commandExecution", id: "maintenance-command", command: "git status", status: "completed", aggregatedOutput: "clean\n" },
+  }));
+
+  runtime.finishTurn.resolve();
+  const chunks = await stream;
+  assert.equal(chunks.at(-1).reason.kind, "stop");
+  assert.ok(activityEvents(agent).some(event => event.data.activity.output === "clean\n"));
+  // The opt-in is sticky across subsequent agent steps, even when omitted.
+  await collect(adapter.stream(options));
+  assert.equal(runtime.created, 1);
+  assert.equal(runtime.resumed, 0);
+  assert.deepEqual(runtime.sent.map(entry => entry.threadId), ["thread-1", "thread-1"]);
+  assert.deepEqual(runtime.released, []);
+});
+
+test("temporary mode cannot convert an existing durable binding or be downgraded", async () => {
+  for (const ephemeral of [false, true]) {
+    const runtime = new FakeRuntime();
+    const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve() });
+    const agent = fakeAgent();
+    adapter.attachAgent(agent);
+    const options = {
+      provider: "relay-codex", model: "codex-test", sessionId: agent.id,
+      messages: [{ role: "user", source: { kind: "user" }, content: [{ type: "text", text: "first turn" }] }],
+      ...(ephemeral ? { relayCodexEphemeral: true } : {}),
+    };
+    await collect(adapter.stream(options));
+    const before = structuredClone(adapter.configuration(agent.id));
+    if (ephemeral) {
+      assert.throws(() => adapter.configure(agent.id, { ephemeral: false }), {
+        code: "CODEX_THREAD_PERSISTENCE_MISMATCH", retryable: false,
+      });
+    } else {
+      await assert.rejects(collect(adapter.stream({ ...options, relayCodexEphemeral: true })), {
+        code: "CODEX_THREAD_PERSISTENCE_MISMATCH", retryable: false,
+      });
+    }
+    assert.deepEqual(adapter.configuration(agent.id), before);
+    assert.equal(runtime.created, 1);
+    assert.equal(runtime.resumed, 0);
+    assert.equal(runtime.sent.length, 1);
+    await adapter.detachAgent(agent.id);
+    assert.deepEqual(runtime.released, ephemeral ? ["thread-1"] : []);
+    assert.equal(adapter.threadFor(agent.id), "thread-1");
+  }
+});
+
+test("a temporary binding rejects changed tools without resuming or replaying work", async () => {
+  const runtime = new FakeRuntime();
+  const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve() });
+  const agent = fakeAgent();
+  adapter.attachAgent(agent);
+  const options = {
+    provider: "relay-codex", model: "codex-test", sessionId: agent.id, relayCodexEphemeral: true,
+    messages: [{ role: "user", source: { kind: "user" }, content: [{ type: "text", text: "maintain memory" }] }],
+  };
+  await collect(adapter.stream(options));
+  await assert.rejects(collect(adapter.stream({ ...options, tools: [{
+    name: "late_tool", description: "New tool", parameters: { type: "object" },
+  }] })), { code: "CODEX_EPHEMERAL_TOOLS_CHANGED", retryable: false, threadId: "thread-1" });
+  assert.equal(runtime.created, 1);
+  assert.equal(runtime.resumed, 0);
+  assert.equal(runtime.sent.length, 1);
+  assert.equal(adapter.threadFor(agent.id), "thread-1");
+});
+
+test("lost temporary context remains a durable tombstone and never resumes or recreates a thread", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "relay-codex-ephemeral-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, "links.json");
+  const runtime = new FakeRuntime();
+  const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve(), linkStore: new CodexLinkStore(path) });
+  const agent = fakeAgent();
+  adapter.attachAgent(agent);
+  const options = {
+    provider: "relay-codex", model: "codex-test", sessionId: agent.id,
+    messages: [{ role: "user", source: { kind: "user" }, content: [{ type: "text", text: "write memory once" }] }],
+  };
+  await collect(adapter.stream({ ...options, relayCodexEphemeral: true }));
+  runtime.sessions.clear();
+  await assert.rejects(collect(adapter.stream(options)), {
+    code: "CODEX_EPHEMERAL_CONTEXT_LOST", retryable: false, threadId: "thread-1",
+  });
+  assert.equal(runtime.created, 1);
+  assert.equal(runtime.resumed, 0);
+  assert.equal(runtime.sent.length, 1);
+
+  const restartedRuntime = new FakeRuntime();
+  const restarted = new CodexDshAdapter({
+    runtime: restartedRuntime, ready: Promise.resolve(), linkStore: new CodexLinkStore(path),
+  });
+  restarted.attachAgent(agent);
+  await assert.rejects(collect(restarted.stream(options)), {
+    code: "CODEX_EPHEMERAL_CONTEXT_LOST", retryable: false, threadId: "thread-1",
+  });
+  assert.equal(restartedRuntime.created, 0);
+  assert.equal(restartedRuntime.resumed, 0);
+  assert.equal(restartedRuntime.sent.length, 0);
+  const persisted = JSON.parse(await readFile(path, "utf8"));
+  assert.equal(persisted.sessions[agent.id].threadId, "thread-1");
+  assert.equal(persisted.sessions[agent.id].config.ephemeral, true);
+});
+
+test("detaching a temporary agent releases its thread only after the active turn settles", async () => {
+  const runtime = new SubagentActivityRuntime();
+  const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve() });
+  const agent = fakeAgent();
+  adapter.attachAgent(agent);
+  const options = {
+    provider: "relay-codex", model: "codex-test", sessionId: agent.id, relayCodexEphemeral: true,
+    messages: [{ role: "user", source: { kind: "user" }, content: [{ type: "text", text: "finish current work" }] }],
+  };
+  const stream = collect(adapter.stream(options));
+  await runtime.activityObserved.promise;
+  await adapter.detachAgent(agent.id);
+  assert.deepEqual(runtime.released, []);
+  assert.equal(runtime.sessions.has("thread-1"), true);
+  runtime.finishTurn.resolve();
+  assert.equal((await stream).at(-1).reason.kind, "stop");
+  assert.deepEqual(runtime.released, ["thread-1"]);
+  adapter.attachAgent(agent);
+  await assert.rejects(collect(adapter.stream(options)), {
+    code: "CODEX_EPHEMERAL_CONTEXT_LOST", retryable: false,
+  });
+  assert.equal(runtime.created, 1);
+  assert.equal(runtime.sent.length, 1);
+});
+
+test("detaching during temporary thread creation cleans up without starting a turn", async () => {
+  const runtime = new FakeRuntime();
+  const started = Promise.withResolvers();
+  const proceed = Promise.withResolvers();
+  const createSession = runtime.createSession.bind(runtime);
+  runtime.createSession = async config => {
+    started.resolve();
+    await proceed.promise;
+    return createSession(config);
+  };
+  const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve() });
+  const agent = fakeAgent();
+  adapter.attachAgent(agent);
+  const stream = collect(adapter.stream({
+    provider: "relay-codex", model: "codex-test", sessionId: agent.id, relayCodexEphemeral: true,
+    messages: [{ role: "user", source: { kind: "user" }, content: [{ type: "text", text: "not started" }] }],
+  }));
+  const rejected = assert.rejects(stream, { code: "CODEX_EPHEMERAL_CONTEXT_LOST", retryable: false });
+  await started.promise;
+  const detached = adapter.detachAgent(agent.id);
+  proceed.resolve();
+  await Promise.all([rejected, detached]);
+  assert.equal(runtime.created, 1);
+  assert.equal(runtime.sent.length, 0);
+  assert.deepEqual(runtime.released, ["thread-1"]);
+});
+
+test("immediate reattachment cannot revive a detached temporary context", async () => {
+  const runtime = new FakeRuntime();
+  const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve() });
+  const agent = fakeAgent();
+  adapter.attachAgent(agent);
+  adapter.configure(agent.id, { ephemeral: true });
+  await adapter.ensureThread(agent.id);
+  const detached = adapter.detachAgent(agent.id);
+  adapter.attachAgent(fakeAgent());
+  await assert.rejects(adapter.ensureThread(agent.id), {
+    code: "CODEX_EPHEMERAL_CONTEXT_LOST", retryable: false,
+  });
+  await detached;
+  assert.deepEqual(runtime.released, ["thread-1"]);
+  assert.equal(runtime.created, 1);
+  assert.equal(runtime.resumed, 0);
+});
+
+test("an unconfirmed temporary thread remains blocked without starting any work", async () => {
+  const runtime = new FakeRuntime();
+  runtime.createSession = async () => {
+    runtime.created += 1;
+    throw Object.assign(new Error("temporary storage unsupported"), {
+      code: "CODEX_EPHEMERAL_UNSUPPORTED", retryable: false, threadId: "unconfirmed-thread",
+    });
+  };
+  const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve() });
+  adapter.configure("maintenance", { ephemeral: true });
+  await assert.rejects(adapter.ensureThread("maintenance"), error => {
+    assert.ok(error instanceof LlmError);
+    assert.equal(error.code, "CODEX_EPHEMERAL_UNSUPPORTED");
+    assert.equal(error.retryable, false);
+    return true;
+  });
+  await assert.rejects(adapter.ensureThread("maintenance"), { code: "CODEX_EPHEMERAL_CONTEXT_LOST", retryable: false });
+  assert.equal(adapter.threadFor("maintenance"), "unconfirmed-thread");
+  assert.equal(runtime.created, 1);
+  assert.equal(runtime.resumed, 0);
+  assert.equal(runtime.sent.length, 0);
+});
+
+test("a proven temporary parent cannot produce a durable DSH fork or fresh replay", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "relay-codex-ephemeral-fork-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, "links.json");
+  const runtime = new FakeRuntime();
+  const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve(), linkStore: new CodexLinkStore(path) });
+  adapter.configure("temporary-parent", { ephemeral: true });
+  const threadId = await adapter.ensureThread("temporary-parent");
+  await assert.rejects(adapter.ensureThread("child", undefined, { threadId, turnId: "turn-1" }), {
+    code: "CODEX_EPHEMERAL_FORK_UNSUPPORTED", retryable: false, threadId,
+  });
+  assert.equal(adapter.configuration("child").ephemeral, true);
+  assert.equal(adapter.configuration("child").ephemeralForkSource.threadId, threadId);
+  await assert.rejects(adapter.ensureThread("child"), { code: "CODEX_EPHEMERAL_FORK_UNSUPPORTED", retryable: false });
+  assert.equal(adapter.threadFor("child"), null);
+  assert.equal(runtime.forked.length, 0);
+  assert.equal(runtime.created, 1);
+  assert.equal(runtime.resumed, 0);
+
+  const restartedRuntime = new FakeRuntime();
+  const restarted = new CodexDshAdapter({ runtime: restartedRuntime, ready: Promise.resolve(), linkStore: new CodexLinkStore(path) });
+  await assert.rejects(restarted.ensureThread("child"), { code: "CODEX_EPHEMERAL_FORK_UNSUPPORTED", retryable: false });
+  assert.equal(restartedRuntime.created, 0);
+  assert.equal(restartedRuntime.resumed, 0);
+});
+
+test("an explicit temporary target rejects inherited durable history without fresh replay", async () => {
+  const runtime = new FakeRuntime();
+  const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve() });
+  const threadId = await adapter.ensureThread("durable-parent");
+  adapter.configure("temporary-child", { ephemeral: true });
+  await assert.rejects(adapter.ensureThread("temporary-child", [], { threadId, turnId: "turn-1" }), {
+    code: "CODEX_EPHEMERAL_FORK_UNSUPPORTED", retryable: false,
+  });
+  await assert.rejects(adapter.ensureThread("temporary-child"), { code: "CODEX_EPHEMERAL_FORK_UNSUPPORTED", retryable: false });
+  assert.equal(runtime.forked.length, 0);
+  assert.equal(runtime.created, 1);
+  assert.equal(runtime.resumed, 0);
+});
+
+test("fresh DSH subagents inherit temporary mode only from trusted known parent metadata", async () => {
+  for (const { parentMode, origin, expected } of [
+    { parentMode: true, origin: "subagent", expected: true },
+    { parentMode: false, origin: "subagent", expected: undefined },
+    { parentMode: undefined, origin: "subagent", expected: undefined },
+    { parentMode: true, origin: undefined, expected: undefined },
+  ]) {
+    const runtime = new FakeRuntime();
+    const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve() });
+    if (parentMode !== undefined) adapter.configure("parent", { ephemeral: parentMode });
+    const child = fakeAgent({ id: "child" });
+    Object.assign(child.session.header, { parentSession: "parent", origin, isSeeded: false });
+    adapter.attachAgent(child);
+    const options = {
+      provider: "relay-codex", model: "codex-test", sessionId: child.id,
+      messages: [{ role: "user", source: { kind: "user" }, content: [{ type: "text", text: "fresh delegated work" }] }],
+    };
+    await collect(adapter.stream(options));
+    assert.equal(runtime.createdConfig.ephemeral, expected);
+    assert.equal(runtime.sent.length, 1);
+    assert.equal(runtime.forked.length, 0);
+    if (expected) {
+      const grandchild = fakeAgent({ id: "grandchild" });
+      Object.assign(grandchild.session.header, { parentSession: child.id, origin: "subagent", isSeeded: false });
+      adapter.attachAgent(grandchild);
+      await collect(adapter.stream({ ...options, sessionId: grandchild.id }));
+      assert.equal(runtime.createdConfigs[1].ephemeral, true);
+    }
+  }
+});
+
+test("a seeded child of a temporary DSH parent cannot replay without a completed Codex marker", async () => {
+  const runtime = new FakeRuntime();
+  const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve() });
+  adapter.configure("parent", { ephemeral: true });
+  const threadId = await adapter.ensureThread("parent");
+  const child = fakeAgent({ id: "seeded-child" });
+  Object.assign(child.session.header, { parentSession: "parent", origin: "subagent", isSeeded: true });
+  adapter.attachAgent(child);
+  await assert.rejects(collect(adapter.stream({
+    provider: "relay-codex", model: "codex-test", sessionId: child.id,
+    messages: [{ role: "user", source: { kind: "user" }, content: [{ type: "text", text: "inherited unfinished work" }] }],
+  })), { code: "CODEX_EPHEMERAL_FORK_UNSUPPORTED", retryable: false, threadId });
+  assert.equal(adapter.configuration(child.id).ephemeral, true);
+  await assert.rejects(adapter.ensureThread(child.id), { code: "CODEX_EPHEMERAL_FORK_UNSUPPORTED", retryable: false });
+  assert.equal(runtime.created, 1);
+  assert.equal(runtime.forked.length, 0);
+  assert.equal(runtime.sent.length, 0);
 });
 
 test("an unrelated DSH plugin message cannot enter the main Codex thread", async () => {

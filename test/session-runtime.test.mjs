@@ -612,12 +612,14 @@ test("ephemeral auxiliary threads carry isolated instructions and are released",
     baseInstructions: "Generate a title.",
     developerInstructions: "Do not call tools.",
     ephemeral: true,
+    toolFree: true,
     serviceName: "relay_codex_auxiliary",
     threadSource: "relay.codex.auxiliary",
   });
   const start = client.requests.find(request => request.method === "thread/start");
   assert.equal(start.params.ephemeral, true);
   assert.equal(start.params.experimentalRawEvents, false);
+  assert.equal(start.params.personality, null);
   assert.equal(start.params.baseInstructions, "Generate a title.");
   assert.equal(start.params.developerInstructions, "Do not call tools.");
   assert.deepEqual(start.params.dynamicTools, []);
@@ -656,6 +658,79 @@ test("resume and settings notifications preserve acknowledged native settings wi
   await runtime.sendMessage(created.id, { text: "continue after native settings change" });
   assert.equal(client.requests.filter(r => r.method === "thread/settings/update").length, 2);
   assert.ok(client.requests.filter(r => r.method === "turn/start").every(r => !Object.hasOwn(r.params, "serviceTier")));
+  await runtime.close();
+});
+
+test("temporary thread creation requires explicit App Server acknowledgement before any turn", async () => {
+  for (const acknowledged of [undefined, false]) {
+    const client = new FakeCodexClient();
+    const request = client.request.bind(client);
+    client.request = async (method, params) => {
+      const response = await request(method, params);
+      if (method === "thread/start") response.thread.ephemeral = acknowledged;
+      return response;
+    };
+    const runtime = new CodexSessionRuntime({ client });
+    await assert.rejects(runtime.createSession({ ephemeral: true }), {
+      code: "CODEX_EPHEMERAL_UNSUPPORTED", retryable: false, threadId: "thread-1",
+    });
+    assert.equal(client.requests.some(entry => entry.method === "turn/start"), false);
+    assert.deepEqual(client.requests.at(-1), { method: "thread/unsubscribe", params: { threadId: "thread-1" } });
+    assert.equal(runtime.getSession("thread-1"), null);
+    await runtime.close();
+  }
+});
+
+test("runtime replacement adopts durable state and forgets temporary thread IDs", async () => {
+  const previous = new CodexSessionRuntime({ client: new FakeCodexClient() });
+  const durable = await previous.createSession();
+  const temporary = await previous.createSession({ ephemeral: true });
+  previous.selectedSessionId = temporary.id;
+  const next = new CodexSessionRuntime({ client: new FakeCodexClient() });
+  next.adoptStateFrom(previous);
+  assert.equal(next.getSession(temporary.id), null);
+  assert.equal(next.appliedThreadSettings.has(temporary.id), false);
+  assert.equal(next.getSession(durable.id).id, durable.id);
+  assert.equal(next.appliedThreadSettings.has(durable.id), true);
+  assert.equal(next.selectedSessionId, null);
+  await previous.close();
+  await next.close();
+});
+
+test("thread closure settles only its temporary turn and invalidates its live cache", async () => {
+  const client = new FakeCodexClient();
+  const runtime = new CodexSessionRuntime({ client });
+  const durable = await runtime.createSession();
+  const temporary = await runtime.createSession({ ephemeral: true });
+  for (const session of [durable, temporary]) {
+    client.notify("turn/started", { threadId: session.id, turn: { id: "running", status: "inProgress", items: [] } });
+    client.serverRequest(`pending-${session.id}`, "item/tool/requestUserInput", { threadId: session.id });
+  }
+  const waiting = runtime.waitForTurn(temporary.id, "running", { timeoutMs: 1000 });
+  client.notify("thread/closed", { threadId: temporary.id });
+  const completed = await waiting;
+  assert.equal(completed.status, "failed");
+  assert.equal(completed.error.code, "CODEX_EPHEMERAL_CONTEXT_LOST");
+  assert.equal(runtime.getSession(temporary.id), null);
+  assert.equal(runtime.appliedThreadSettings.has(temporary.id), false);
+  assert.equal(runtime.pendingRequests.has(`pending-${temporary.id}`), false);
+  assert.equal(runtime.getSession(durable.id).turns[0].status, "inProgress");
+  assert.equal(runtime.pendingRequests.has(`pending-${durable.id}`), true);
+  await runtime.close();
+});
+
+test("an App Server exit settles temporary turns before invalidating their context", async () => {
+  const client = new FakeCodexClient();
+  const runtime = new CodexSessionRuntime({ client });
+  const durable = await runtime.createSession();
+  const temporary = await runtime.createSession({ ephemeral: true });
+  client.notify("turn/started", { threadId: temporary.id, turn: { id: "running", status: "inProgress", items: [] } });
+  const waiting = runtime.waitForTurn(temporary.id, "running", { timeoutMs: 1000 });
+  client.emit("exit", { code: 1 });
+  assert.equal((await waiting).error.code, "CODEX_APP_SERVER_EXITED");
+  assert.equal(runtime.getSession(temporary.id), null);
+  assert.equal(runtime.appliedThreadSettings.has(temporary.id), false);
+  assert.equal(runtime.getSession(durable.id).id, durable.id);
   await runtime.close();
 });
 
@@ -700,6 +775,7 @@ class FakeCodexClient extends EventEmitter {
     this.requests.push({ method, params: structuredClone(params) });
     if (method === "model/list") return { data: [model()] };
     if (method === "account/read") return { account: { type: "chatgpt", planType: "test" }, requiresOpenaiAuth: true };
+    if (method === "config/read") return { config: {} };
     if (method === "thread/list") {
       return { data: [...this.threads.values()].filter(thread => thread.cwd === params.cwd && !thread.ephemeral).map(thread => ({ ...structuredClone(thread), turns: [] })) };
     }

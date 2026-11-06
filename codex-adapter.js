@@ -57,6 +57,9 @@ export class CodexDshAdapter extends LlmAdapter {
     this.subagentBindingConflicts = new Set();
     this.activeRootTurns = new Map();
     this.activeTurnSignals = new Map();
+    this.ephemeralReleases = new Map();
+    this.releasedEphemeralThreads = new Set();
+    this.detachedEphemeralSessions = new Set();
     for (const [sessionId, record] of linkStore?.entries() ?? []) {
       if (record.threadId) this.links.set(sessionId, record.threadId);
       this.settings.set(sessionId, record.config);
@@ -146,11 +149,35 @@ export class CodexDshAdapter extends LlmAdapter {
 
   detachAgent(sessionId) {
     const key = String(sessionId);
+    if (this.settings.get(key)?.ephemeral) this.detachedEphemeralSessions.add(key);
     this.agents.delete(key);
     this.dshToolNames.delete(key);
     this.appliedDynamicToolSignatures.delete(key);
     this.releaseSubagentBindings(key);
     this.bumpBindingEpoch(key);
+    return this.releaseDetachedEphemeralThread(key);
+  }
+
+  async releaseDetachedEphemeralThread(sessionId) {
+    // A detached agent can still be finishing a turn or creating its first
+    // thread. Release only after that work settles, keeping the link as a
+    // tombstone so a later retry cannot replay side effects in a new thread.
+    await this.pendingThreads.get(sessionId)?.catch(() => {});
+    const threadId = this.links.get(sessionId);
+    if (!threadId || !this.detachedEphemeralSessions.has(sessionId)
+      || this.activeRootTurns.has(threadId)) return;
+    const pending = this.ephemeralReleases.get(threadId);
+    if (pending) return pending;
+    if (this.releasedEphemeralThreads.has(threadId)) return;
+    this.releasedEphemeralThreads.add(threadId);
+    const release = Promise.resolve().then(() => this.runtime.releaseSession(threadId))
+      .catch(error => {
+        this.logger.error?.(`Relay could not release temporary Codex thread ${threadId}: ${error?.message ?? error}`);
+      }).finally(() => {
+        this.ephemeralReleases.delete(threadId);
+      });
+    this.ephemeralReleases.set(threadId, release);
+    return release;
   }
 
   configuration(sessionId, cwd) {
@@ -172,7 +199,14 @@ export class CodexDshAdapter extends LlmAdapter {
 
   configure(sessionId, patch = {}) {
     const key = String(sessionId);
-    const next = { ...this.configuration(key), ...compact(patch) };
+    const current = this.configuration(key);
+    if (patch.ephemeral !== undefined
+      && Boolean(patch.ephemeral) !== Boolean(current.ephemeral)
+      && (this.links.has(key) || this.pendingThreads.has(key))) {
+      throw bindingPolicyError(key, this.links.get(key), "CODEX_THREAD_PERSISTENCE_MISMATCH",
+        "An existing Codex binding cannot switch between durable and temporary storage.");
+    }
+    const next = { ...current, ...compact(patch) };
     this.settings.set(key, next);
     const threadId = this.links.get(key);
     if (threadId) {
@@ -184,6 +218,11 @@ export class CodexDshAdapter extends LlmAdapter {
 
   async ensureThread(sessionId, dynamicTools = this.dynamicTools, inheritedProvenance = null) {
     const key = String(sessionId);
+    const blockedFork = this.settings.get(key)?.ephemeralForkSource;
+    if (blockedFork) {
+      throw bindingPolicyError(key, blockedFork.threadId, "CODEX_EPHEMERAL_FORK_UNSUPPORTED",
+        "This temporary DSH Session cannot inherit another Codex thread's history.");
+    }
     const pending = this.pendingThreads.get(key);
     if (pending) return pending;
     const blocked = this.rebindStates.get(key);
@@ -200,7 +239,6 @@ export class CodexDshAdapter extends LlmAdapter {
   }
 
   async forkInheritedThread(sessionId, dynamicTools, provenance) {
-    await this.ready;
     const sourceSessionId = this.dshSessionForThread(provenance.threadId);
     if (!provenance.turnId
       || !sourceSessionId
@@ -214,7 +252,20 @@ export class CodexDshAdapter extends LlmAdapter {
       );
       throw this.enterRebindRequired(sessionId, provenance);
     }
+    if (this.configuration(sourceSessionId).ephemeral || this.configuration(sessionId).ephemeral) {
+      this.configure(sessionId, {
+        ephemeral: true,
+        ephemeralForkSource: { sessionId: sourceSessionId, threadId: provenance.threadId },
+      });
+      // Codex 0.166 thread/fork reads the persisted source rollout even when
+      // the source is loaded. It cannot safely branch an ephemeral thread.
+      throw bindingPolicyError(sessionId, provenance.threadId, "CODEX_EPHEMERAL_FORK_UNSUPPORTED",
+        "This temporary DSH Session cannot inherit another Codex thread's history.");
+    }
+    await this.ready;
     const settings = { ...this.configuration(sessionId), dynamicTools };
+    const signature = JSON.stringify(dynamicTools);
+    const sourceSignature = this.appliedDynamicToolSignatures.get(sourceSessionId);
     let forked;
     try {
       forked = await this.runtime.forkSession(provenance.threadId, {
@@ -241,8 +292,6 @@ export class CodexDshAdapter extends LlmAdapter {
     this.bumpBindingEpoch(sessionId);
     this.persistLink(sessionId);
 
-    const signature = JSON.stringify(dynamicTools);
-    const sourceSignature = this.appliedDynamicToolSignatures.get(sourceSessionId);
     if (sourceSignature !== signature) {
       try {
         await this.runtime.resumeSession(forked.id, settings);
@@ -266,6 +315,21 @@ export class CodexDshAdapter extends LlmAdapter {
     const settings = { ...this.configuration(sessionId), dynamicTools };
     const signature = JSON.stringify(dynamicTools);
     const linked = this.links.get(sessionId);
+    if (settings.ephemeral && this.detachedEphemeralSessions.has(sessionId)) {
+      throw bindingPolicyError(sessionId, linked, "CODEX_EPHEMERAL_CONTEXT_LOST",
+        "The owning DSH agent was detached and its temporary Codex context cannot be reused.");
+    }
+    if (linked && settings.ephemeral) {
+      if (this.releasedEphemeralThreads.has(linked) || !hasRuntimeSession(this.runtime, linked)) {
+        throw bindingPolicyError(sessionId, linked, "CODEX_EPHEMERAL_CONTEXT_LOST",
+          "The temporary Codex context is no longer available and cannot be resumed after release or restart.");
+      }
+      if (this.appliedDynamicToolSignatures.get(sessionId) !== signature) {
+        throw bindingPolicyError(sessionId, linked, "CODEX_EPHEMERAL_TOOLS_CHANGED",
+          "The DSH tool surface changed after the temporary Codex thread started; this App Server cannot update it safely.");
+      }
+      return linked;
+    }
     if (linked && hasRuntimeSession(this.runtime, linked)) {
       if (this.appliedDynamicToolSignatures.get(sessionId) !== signature) {
         await this.runtime.resumeSession(linked, settings);
@@ -282,10 +346,24 @@ export class CodexDshAdapter extends LlmAdapter {
         throw persistedResumeError(sessionId, linked, error, this);
       }
     }
-    const created = await this.runtime.createSession({
-      ...settings,
-      ...(this.executionGuidance ? { developerInstructions: settings.developerInstructions ?? this.executionGuidance } : {}),
-    });
+    let created;
+    try {
+      created = await this.runtime.createSession({
+        ...settings,
+        ...(this.executionGuidance ? { developerInstructions: settings.developerInstructions ?? this.executionGuidance } : {}),
+      });
+    } catch (error) {
+      if (settings.ephemeral && error?.code === "CODEX_EPHEMERAL_UNSUPPORTED") {
+        if (error.threadId) {
+          this.links.set(sessionId, error.threadId);
+          this.releasedEphemeralThreads.add(error.threadId);
+          this.bumpBindingEpoch(sessionId);
+          this.persistLink(sessionId);
+        }
+        throw bindingPolicyError(sessionId, error.threadId, error.code, error.message, error);
+      }
+      throw error;
+    }
     this.links.set(sessionId, created.id);
     this.bumpBindingEpoch(sessionId);
     this.appliedDynamicToolSignatures.set(sessionId, signature);
@@ -612,12 +690,23 @@ export class CodexDshAdapter extends LlmAdapter {
 
     const events = sessionEvents(agent.session);
     const nativePermissions = permissionConfiguration(events);
+    const header = agent.session.header;
+    const parentSessionId = header.origin === "subagent" ? optionalIdentity(header.parentSession) : null;
+    const temporaryParent = parentSessionId && this.settings.get(parentSessionId)?.ephemeral === true;
     const config = this.configure(sessionId, {
       ...(options.provider === CODEX_PROVIDER ? { model: options.model } : {}),
       ...(options.provider === CODEX_PROVIDER ? { effort: options.reasoningEffort } : {}),
       ...nativePermissions,
       cwd: agent.session.header.cwd,
+      ...(options.relayCodexEphemeral === true || temporaryParent ? { ephemeral: true } : {}),
     });
+    if (config.ephemeral && parentSessionId && header.isSeeded !== false) {
+      // A seeded child can be spawned before its parent has a completed Codex
+      // replay marker. Trusted DSH lineage must not fall back to a fresh turn.
+      this.configure(sessionId, { ephemeralForkSource: {
+        sessionId: parentSessionId, threadId: this.links.get(parentSessionId) ?? null,
+      } });
+    }
     const dshTools = this.executionMode === "native" ? [] : options.tools ?? [];
     const dshToolSurface = codexDshToolSurface(dshTools, this.dynamicTools);
     const threadId = await this.ensureThread(
@@ -625,6 +714,12 @@ export class CodexDshAdapter extends LlmAdapter {
       dshToolSurface.dynamicTools,
       inheritedCodexProvenance(options.messages),
     );
+    if (this.configuration(sessionId).ephemeral
+      && (this.agents.get(sessionId) !== agent || this.detachedEphemeralSessions.has(sessionId))) {
+      await this.releaseDetachedEphemeralThread(sessionId);
+      throw bindingPolicyError(sessionId, threadId, "CODEX_EPHEMERAL_CONTEXT_LOST",
+        "The owning DSH agent was detached before its temporary Codex turn could start.");
+    }
     this.dshToolNames.set(sessionId, dshToolSurface.aliasToOriginal);
     const queue = new ActivityQueue(options.signal);
     const onActivity = (message) => {
@@ -743,6 +838,7 @@ export class CodexDshAdapter extends LlmAdapter {
           this.appendActivity(agent, threadId, turnId, { ...finalItem, status: "failed" }, "completed", state);
         }
       }
+      await this.releaseDetachedEphemeralThread(sessionId);
     }
   }
 
@@ -1067,6 +1163,19 @@ function persistedResumeError(sessionId, threadId, cause, adapter) {
   error.retryable = true;
   error.threadId = threadId;
   error.sessionId = String(sessionId);
+  return error;
+}
+
+function bindingPolicyError(sessionId, threadId, code, message, cause) {
+  const error = new LlmError(
+    `${message} Start a new DSH Session for new work. `
+    + "The original binding was preserved and no replacement Codex Thread was created.",
+    code,
+    cause ? { cause } : undefined,
+  );
+  error.retryable = false;
+  error.sessionId = String(sessionId);
+  if (threadId) error.threadId = threadId;
   return error;
 }
 
