@@ -92,7 +92,6 @@ const NATIVE_CODEX_CAPABILITIES = {
     "codex/event/terminal_interaction",
     "codex/event/token_count",
     "codex/event/deprecation_notice",
-    "thread/closed",
     "rawResponse/completed",
     "warning",
   ],
