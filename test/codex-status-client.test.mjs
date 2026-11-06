@@ -30,6 +30,7 @@ test("client status reads global or session-scoped Codex state", async () => {
   assert.equal(calls[0].options.method, "GET");
   assert.equal(statusLocaleKey(status), "statusRebindRequired");
   assert.equal(statusLocaleKey(null), "statusLoading");
+  assert.equal(statusLocaleKey({ state: "standby" }), "statusStandby");
 });
 
 test("invalid status responses fail instead of inventing a connected state", async () => {

@@ -108,6 +108,13 @@ export interface CodexProcessState {
   readonly presentations: Readonly<Record<number, CodexPresentation>>
 }
 
+/** Reuse the tool result, or the exact provider item mapping in older histories. */
+export function codexActivityImages(segment: CodexProcessSegment, segments: readonly CodexProcessSegment[]) {
+  return segment.activity?.images?.length ? segment.activity.images : segments.flatMap(candidate =>
+    segment.itemId !== undefined && candidate.kind === 'image' && candidate.itemId === segment.itemId && candidate.attachment
+      ? [candidate.attachment] : [])
+}
+
 declare module '@deepseek-ai/dsh-client-ui-conversation/client' {
   interface ConversationTurnDataMap {
     'relay-codex-process': CodexProcessState
@@ -403,7 +410,10 @@ function foldCodexProcess(state: CodexProcessState, event: CompatibleSessionEven
         next = { ...next, orphanResultSeq: next.orphanResultSeq ?? event.seq }
       }
       const isError = result.isError === true || event.data.error !== undefined
-      if (payload) return upsertActivity(next, event.data.step, event.seq, { ...payload, phase: 'completed' }, {
+      const images = result.content.flatMap(part => part.type === 'image' ? [part.attachment] : [])
+      if (payload) return upsertActivity(next, event.data.step, event.seq, { ...payload, phase: 'completed',
+        activity: { ...payload.activity, images },
+      }, {
         callId, isError, messageId: event.data.message.id,
       })
       if (!previous?.activity) return unsupportedTool(next, event.seq)

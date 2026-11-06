@@ -331,3 +331,25 @@ function fixtureSource(models) {
     "})",
   ].join("\n");
 }
+
+test("stuck child shutdown waits for actual exit after escalation", async () => {
+  const client = new CodexAppServerClient({command: "bundled"});
+  const { EventEmitter } = await import("node:events");
+  const child = new EventEmitter();
+  child.exitCode = null; child.signalCode = null;
+  const signals = [];
+  child.kill = signal => {
+    signals.push(signal);
+    if (signal === "SIGKILL") setTimeout(() => child.emit("exit", null, "SIGKILL"), 10);
+    return true;
+  };
+  client.process = child;
+  let closed = false;
+  const result = client.close().then(() => { closed = true; });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(closed, false);
+  assert.deepEqual(signals, ["SIGTERM"]);
+  await result;
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(closed, true);
+});

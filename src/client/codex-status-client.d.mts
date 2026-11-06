@@ -1,5 +1,5 @@
 export interface CodexConnectionStatus {
-  state: 'not-started' | 'starting' | 'connected' | 'connection-failed' | 'unavailable' | 'rebind-required'
+  state: 'standby' | 'not-started' | 'starting' | 'connected' | 'connection-failed' | 'unavailable' | 'rebind-required'
   code: string
   message: string
   action: string | null

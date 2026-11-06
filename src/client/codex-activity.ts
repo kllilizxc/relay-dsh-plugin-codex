@@ -1,6 +1,7 @@
 import type { ConversationNodeDefinition } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { ChatConversationViewNode } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { SessionEventMap } from '@deepseek-ai/dsh-session/types'
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 
 type SessionEventContractAnchor = SessionEventMap
 
@@ -15,6 +16,7 @@ export interface CodexActivityData {
   readonly output?: string
   readonly exitCode?: string
   readonly commandActions?: string
+  readonly images?: readonly ImageAttachmentRef[]
   readonly provenance?: {
     readonly threadId: string
     readonly turnId: string

@@ -3564,3 +3564,52 @@ test("file attachments without a host path report their limitation instead of di
     assert.match(runtime.sent[0].message.text, /do not claim to have read it/);
   }
 });
+
+test("commentary streams before a held dynamic tool and the Codex turn complete", async () => {
+  const release = Promise.withResolvers();
+  let toolStarted = false;
+  class HeldTurnRuntime extends FakeRuntime {
+    async sendMessage(threadId, message) {
+      this.sent.push({ threadId, message });
+      const turnId = "held-turn";
+      queueMicrotask(async () => {
+        this.emit("activity", notification("item/started", threadId, turnId, {
+          item: { type: "agentMessage", id: "early", phase: "commentary" },
+        }));
+        this.emit("activity", notification("item/agentMessage/delta", threadId, turnId, { itemId: "early", delta: "I will hand this off." }));
+        this.emit("activity", notification("item/completed", threadId, turnId, {
+          item: { type: "agentMessage", id: "early", phase: "commentary", text: "I will hand this off." },
+        }));
+        toolStarted = true;
+        this.emit("activity", notification("item/started", threadId, turnId, {
+          item: { type: "dynamicToolCall", id: "handoff", namespace: "dsh", tool: "workbench", status: "inProgress" },
+        }));
+        await release.promise;
+        this.emit("activity", notification("item/completed", threadId, turnId, {
+          item: { type: "dynamicToolCall", id: "handoff", namespace: "dsh", tool: "workbench", status: "completed", success: true },
+        }));
+        this.emit("activity", { method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed", items: [] } } });
+      });
+      return { id: turnId, status: "inProgress", items: [] };
+    }
+  }
+  const adapter = new CodexDshAdapter({ runtime: new HeldTurnRuntime(), ready: Promise.resolve() });
+  const agent = fakeAgent(); adapter.attachAgent(agent);
+  const stream = adapter.stream({ provider: "relay-codex", model: "codex-test", sessionId: agent.id,
+    messages: [{ role: "user", source: { kind: "user" }, content: [{ type: "text", text: "Start" }] }] });
+  const seen = [];
+  try {
+    while (!seen.some(chunk => chunk.type === "text-delta")) {
+      const next = await stream.next();
+      assert.equal(next.done, false);
+      seen.push(next.value);
+    }
+    assert.equal(toolStarted, true);
+    assert.equal(seen.find(chunk => chunk.type === "text-delta").text, "I will hand this off.");
+    assert.equal(seen.some(chunk => chunk.type === "finish"), false);
+  } finally {
+    release.resolve();
+    for await (const chunk of stream) seen.push(chunk);
+  }
+  assert.equal(seen.at(-1).type, "finish");
+});

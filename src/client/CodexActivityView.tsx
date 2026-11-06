@@ -1,11 +1,13 @@
-import { memo, useState } from 'react'
+import { memo, useState, type ReactNode } from 'react'
 import { BookOpen, FilePenLine, FolderOpen, Image, ListChecks, Search, Terminal, Wrench } from 'lucide-react'
 import {
   DisclosureRow,
+  MarkdownText,
   StateDot,
   type StateDotState,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { PropsRuntime, PropsRenderFactories } from '@deepseek-ai/dsh-client-ui-slots'
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { ToolCallViewProps } from '@deepseek-ai/dsh-client-ui-tool/client'
 import { readActivityPayload } from '../../codex-activity-wire.mjs'
 import { describeActivity, type ActivityCategory } from '../../codex-activity-labels.mjs'
@@ -13,9 +15,26 @@ import type { CodexActivityData } from './codex-activity.ts'
 import css from './CodexActivityView.module.css'
 import { useProcessPresence } from './process-presence.ts'
 import { useCompatibleChat } from './compatible-chat.ts'
-import { canTakeOverCodexProcess } from './codex-process.ts'
+import { canTakeOverCodexProcess, codexActivityImages, type CodexProcessState } from './codex-process.ts'
 
-type CodexActivityViewProps = PropsRuntime<'conversation.chat.node', 'relay-codex-activity'>
+type CodexActivityViewProps = PropsRuntime<'conversation.chat.node', 'relay-codex-activity'> & PropsRenderFactories
+export type ActivityImageRenderer = (images: readonly ImageAttachmentRef[]) => ReactNode
+const previewLabels = { code: { copyLabel: 'Copy', copiedLabel: 'Copied' }, footnotes: 'Footnotes' }
+
+/** Older image-view records keep only the provider's local path, read by native Markdown's authenticated file resolver. */
+export function historicalImageMarkdown(activity: CodexActivityData): string | undefined {
+  if (activity.type !== 'imageView' || activity.status !== 'completed' || !activity.summary) return
+  let path = activity.summary
+  if (path.startsWith('file:')) {
+    try {
+      const url = new URL(path)
+      if (url.hostname) return
+      path = decodeURIComponent(url.pathname)
+    } catch { return }
+  }
+  if (!/^(?:\/(?!\/)|[A-Za-z]:[\\/])/.test(path)) return
+  return `![Viewed image](<${encodeURI(path).replaceAll('#', '%23').replaceAll('?', '%3F')}>)`
+}
 
 function dotState(status: CodexActivityData['status']): StateDotState {
   if (status === 'running') return 'ongoing'
@@ -34,12 +53,16 @@ export function ActivityIcon({ category }: { category: ActivityCategory }) {
   return <Icon size={16} strokeWidth={1.6} aria-hidden="true" data-activity-icon={category} />
 }
 
-export const CodexActivityView = memo(function CodexActivityView({ node }: CodexActivityViewProps) {
+export const CodexActivityView = memo(function CodexActivityView({ node, useTurnData, renderFactorySlot, loadImage }: CodexActivityViewProps) {
   const activity = node.data as CodexActivityData
-  return <ActivityRow activity={activity} />
+  const process = useTurnData('relay-codex-process')
+  const images = codexActivityImages({ key: node.key, seq: node.anchorSeq, step: 0, kind: 'activity', itemId: node.id, activity }, process?.segments ?? [])
+  return <ActivityRow activity={activity} images={images} renderImages={images => renderFactorySlot('conversation.images.content', {
+    images: images.map(attachment => ({ attachment })), loadImage, align: 'start',
+  })} />
 })
 
-export function GroupedCodexToolActivityView(props: ToolCallViewProps) {
+export function GroupedCodexToolActivityView(props: ToolCallViewProps & PropsRenderFactories) {
   const process = useCompatibleChat(props, snapshot => {
     const native = [...snapshot.nodes.values()].find(node => node.kind === 'tool-call' && node.id === props.callId)
     const location = native?.location
@@ -51,10 +74,10 @@ export function GroupedCodexToolActivityView(props: ToolCallViewProps) {
   if (mounted && canTakeOverCodexProcess(process) && represented && props.block.subCalls.length === 0) {
     return <span hidden data-codex-grouped-call={props.callId} />
   }
-  return <CodexToolActivityView {...props} />
+  return <CodexToolActivityView {...props} process={process} />
 }
 
-export function CodexToolActivityView({ block }: ToolCallViewProps) {
+export function CodexToolActivityView({ block, renderFactorySlot, loadImage, process }: ToolCallViewProps & PropsRenderFactories & { process?: CodexProcessState }) {
   let payload = 'kind' in block && block.meta && typeof block.meta === 'object'
     ? readActivityPayload((block.meta as Record<string, unknown>).codexActivity)
     : null
@@ -69,13 +92,23 @@ export function CodexToolActivityView({ block }: ToolCallViewProps) {
         ...('kind' in block ? { status: block.isError ? 'error' as const : 'completed' as const } : {}),
         provenance: { threadId: payload.threadId, turnId: payload.turnId },
       }
-  return <ActivityRow activity={activity} />
+  const recorded = 'kind' in block ? block.content.flatMap(part => part.type === 'image' ? [part.attachment] : []) : []
+  const segment = process?.segments.find(segment => segment.kind === 'activity' && segment.itemId === payload?.itemId)
+  const images = recorded.length ? recorded : segment ? codexActivityImages(segment, process!.segments) : []
+  return <ActivityRow activity={activity} images={images} renderImages={images => renderFactorySlot('conversation.images.content', {
+    images: images.map(attachment => ({ attachment })), loadImage, align: 'start',
+  })} />
 }
 
-export function ActivityRow({ activity }: { activity: CodexActivityData }) {
+export function ActivityRow({ activity, images = activity.images ?? [], renderImages }: {
+  activity: CodexActivityData
+  images?: readonly ImageAttachmentRef[]
+  renderImages?: ActivityImageRenderer
+}) {
   const [open, setOpen] = useState(false)
   const description = describeActivity(activity)
-  const expandable = activity.input !== undefined || activity.output !== undefined || activity.provenance !== undefined
+  const historicalPreview = images.length === 0 ? historicalImageMarkdown(activity) : undefined
+  const expandable = images.length > 0 || historicalPreview !== undefined || activity.input !== undefined || activity.output !== undefined || activity.provenance !== undefined
   const commandTranscript = activity.type === 'commandExecution'
     ? [activity.input, activity.output].filter((value): value is string => value !== undefined && value !== '').join('\n\n')
     : undefined
@@ -97,6 +130,8 @@ export function ActivityRow({ activity }: { activity: CodexActivityData }) {
         )}
       >
         <div className={css.detail}>
+          {images.length > 0 && renderImages && <div className={css.preview}>{renderImages(images)}</div>}
+          {historicalPreview && <div className={css.preview}><MarkdownText text={historicalPreview} labels={previewLabels} /></div>}
           {activity.provenance !== undefined ? (
             <div
               className={css.provenance}

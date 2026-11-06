@@ -15,6 +15,7 @@ export async function fetchCodexStatus(sessionId, fetchImpl = fetch) {
 
 export function statusLocaleKey(status) {
   if (!status) return "statusLoading";
+  if (status.state === "standby") return "statusStandby";
   if (status.state === "connected") return "statusConnected";
   if (status.state === "not-started") return "statusNotStarted";
   if (status.state === "starting") return "statusStarting";

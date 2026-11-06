@@ -32,7 +32,7 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
 }))
 
 const conversationContextKey = (kind: string, id: string) => `${kind}:${id}`
-import { CodexActivityView, CodexToolActivityView, GroupedCodexToolActivityView } from '../src/client/CodexActivityView.tsx'
+import { CodexActivityView, CodexToolActivityView, GroupedCodexToolActivityView, historicalImageMarkdown } from '../src/client/CodexActivityView.tsx'
 import { initialCodexProcessState, type CodexProcessState } from '../src/client/codex-process.ts'
 import { mountProcess } from '../src/client/process-presence.ts'
 
@@ -46,6 +46,45 @@ afterEach(() => {
 })
 
 describe('CodexActivityView', () => {
+  it('uses historical local image paths without enabling remote image fetches', () => {
+    const activity = { type: 'imageView', status: 'completed', title: 'Viewed an image' } as const
+    for (const summary of ['https://example.test/private.png', 'file://remote.test/private.png', '//remote.test/private.png']) {
+      expect(historicalImageMarkdown({ ...activity, summary })).toBeUndefined()
+    }
+    expect(historicalImageMarkdown({ ...activity, status: 'error', summary: '/tmp/capture.png' })).toBeUndefined()
+    expect(historicalImageMarkdown({ ...activity, summary: 'file:///tmp/capture%20%23.png' })).toContain('/tmp/capture%20%23.png')
+  })
+  it('renders the settled tool image through the native gallery using its session loader', () => {
+    const attachment = { attachmentId: 'sha256:fixture', mediaType: 'image/png', bytes: 42, width: 320, height: 200, name: 'capture.png' }
+    const block = { ...nativeBlock({ type: 'imageView', status: 'completed', title: 'Viewed an image' }, 'image'),
+      content: [{ type: 'image', attachment }] } as ToolCallViewProps['block']
+    const renderFactorySlot = vi.fn(() => <img alt="Native viewed image" />)
+    const loadImage = vi.fn()
+    render(<CodexToolActivityView {...toolProps(block)} renderFactorySlot={renderFactorySlot} loadImage={loadImage} />)
+    expect(screen.queryByRole('img')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Viewed an image' }))
+    expect(screen.getByRole('img', { name: 'Native viewed image' })).not.toBeNull()
+    expect(renderFactorySlot).toHaveBeenCalledWith('conversation.images.content', {
+      images: [{ attachment }], loadImage, align: 'start',
+    })
+  })
+
+  it('recovers old tool previews only from the exact provider item mapping', () => {
+    const attachment = { attachmentId: 'sha256:fixture', mediaType: 'image/png', bytes: 42, width: 320, height: 200, name: 'capture.png' } as const
+    const block = nativeBlock({ type: 'imageView', status: 'completed', title: 'Viewed an image' }, 'image')
+    const process = { ...representedProcess(), segments: [
+      { key: 'activity', seq: 1, step: 0, kind: 'activity' as const, itemId: 'image' },
+      { key: 'preview', seq: 2, step: 0, kind: 'image' as const, itemId: 'image', attachment },
+    ] }
+    const renderFactorySlot = vi.fn(() => <img alt="Historical viewed image" />)
+    const { rerender } = render(<CodexToolActivityView {...toolProps(block)} process={process} renderFactorySlot={renderFactorySlot} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Viewed an image' }))
+    expect(screen.getByRole('img', { name: 'Historical viewed image' })).not.toBeNull()
+    rerender(<CodexToolActivityView {...toolProps(block)} process={{ ...process, segments: [
+      process.segments[0], { ...process.segments[1], itemId: 'unrelated-image' },
+    ] }} renderFactorySlot={renderFactorySlot} />)
+    expect(screen.queryByRole('img')).toBeNull()
+  })
   it('keeps the same expanded row when native tool metadata settles and replays', () => {
     const running = nativeBlock(readActivity('running'))
     const { rerender } = render(<CodexToolActivityView {...toolProps(running)} />)
@@ -249,7 +288,8 @@ function toolProps(block: ToolCallViewProps['block'], process?: CodexProcessStat
   const turn = { data: new Map([['relay-codex-process', process]]) }
   const snapshot = { nodes: new Map([[conversationContextKey('tool-call', rootId), { kind: 'tool-call', id: rootId, location: { kind, turn } }]]) }
   return {
-    sessionId: 'activity-session', callId: block.callId, toolName: 'relay_codex_activity', block,
+    sessionId: 'activity-session', callId: block.callId, toolName: 'relay_codex_activity', block: 'kind' in block ? { ...block, content: block.content ?? [] } : block,
+    renderFactorySlot: () => null, loadImage: vi.fn(),
     openFile: vi.fn(), useChat: selector => selector(snapshot as never),
   } as ToolCallViewProps
 }
@@ -268,7 +308,7 @@ function renderActivity(activity: CodexActivityData) {
       target: 'chat', anchorSeq: 1, location: { kind: 'unresolved' }, visibility: 'visible', data: activity,
     },
     openFile: vi.fn(), inspectCall: vi.fn(), forkAt: vi.fn(),
-    renderMessageImages: () => null, fileMentions: () => undefined,
+    renderFactorySlot: () => null, loadImage: vi.fn(), useTurnData: () => undefined, fileMentions: () => undefined,
   }
   return render(<CodexActivityView {...props as React.ComponentProps<typeof CodexActivityView>} />)
 }

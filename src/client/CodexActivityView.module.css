@@ -39,10 +39,35 @@
 .detail {
   margin: 8px 0 12px 28px;
   overflow: hidden;
-  border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 8px;
-  background: var(--dsw-alias-background-container, #f6f6f7);
+  background: var(--dsw-alias-bg-layer-3);
   color: var(--dsw-alias-label-secondary);
+}
+
+.preview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  padding: 12px;
+}
+
+.preview > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.preview :global(button[data-variant='single']) {
+  max-width: 100%;
+  height: auto !important;
+}
+
+.preview :global(button[data-variant='single'] img) {
+  height: auto;
+  object-fit: contain;
+}
+
+.preview :global(img) {
+  max-width: 100%;
 }
 
 .detailBlock {
@@ -51,7 +76,7 @@
 
 .detailLabel {
   padding: 10px 12px 0;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font-size: 13px;
   line-height: 18px;
 }
@@ -70,7 +95,7 @@
 .provenance {
   padding: 10px 12px 0;
   overflow: hidden;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font-size: 12px;
   line-height: 18px;
   text-overflow: ellipsis;
@@ -81,9 +106,8 @@
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  border-top: 1px solid var(--dsw-alias-border-l2);
   padding: 8px 12px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font-size: 13px;
   line-height: 18px;
 }

@@ -4,8 +4,8 @@ import { MarkdownText, DisclosureRow } from '@deepseek-ai/dsh-client-ui-primitiv
 import type { ChatNodeOwnerProps, TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { PropsRuntime, PropsRenderFactories } from '@deepseek-ai/dsh-client-ui-slots'
 import { describeActivity, summarizeActivities } from '../../codex-activity-labels.mjs'
-import { ActivityIcon, ActivityRow } from './CodexActivityView.tsx'
-import { canTakeOverCodexProcess, codexProcessAnswerSegments, type AssistantTextProjection, type CodexProcessSegment, type CodexProcessState } from './codex-process.ts'
+import { ActivityIcon, ActivityRow, type ActivityImageRenderer } from './CodexActivityView.tsx'
+import { canTakeOverCodexProcess, codexActivityImages, codexProcessAnswerSegments, type AssistantTextProjection, type CodexProcessSegment, type CodexProcessState } from './codex-process.ts'
 import { mountProcess } from './process-presence.ts'
 import { codexProducedFileMentions } from './process-files.ts'
 import css from './CodexProcessView.module.css'
@@ -40,8 +40,11 @@ export function groupProcessSegments(segments: readonly CodexProcessSegment[]): 
 }
 
 export function CodexProcessView({ node, sessionId, renderFactorySlot, useTurnData, useChat, useSession, openFile, loadImage, fileMentions, turnProcess, toolPresentation }: CompatibleProcessProps) {
-  const hideToolRows = useSyncExternalStore(toolPresentation?.subscribe ?? noSubscription,
-    () => toolPresentation?.hideToolRows(sessionId) ?? false, () => false)
+  const hideToolRows = useSyncExternalStore(
+    toolPresentation?.subscribe ?? noSubscription,
+    () => toolPresentation?.hideToolRows(sessionId) ?? false,
+    () => false,
+  )
   // Legacy activity has no numeric turn in its payload. Its visible anchor still
   // proves an intervening native row; do not move grouped prose across that row.
   const legacyBoundary = useCompatibleChat({ useChat, useSession }, snapshot => [...snapshot.nodes.values()].some(candidate =>
@@ -79,6 +82,8 @@ export function ProcessBody({ state, renderFactorySlot, loadImage, fileMentions,
     const timer = setInterval(() => { setNow(Date.now()) }, 1000)
     return () => { clearInterval(timer) }
   }, [state.status])
+  // Keep the original native call and accessory intact; only its duplicate
+  // grouped presentation is omitted under an optional host policy.
   const segments = hideToolRows ? state.segments.filter(segment => !(segment.kind === 'activity'
     && segment.activity?.type === 'dynamicToolCall' && segment.activity.title === 'dsh / workbench')) : state.segments
   const answerKeys = new Set(codexProcessAnswerSegments(state).map(segment => segment.key))
@@ -124,7 +129,9 @@ function ProcessItems({ segments, renderFactorySlot, loadImage, running, fileMen
   showImages?: boolean
 }) {
   return groupProcessSegments(segments).map(item => 'activities' in item
-    ? <ActivityGroup key={item.key} segments={item.activities} />
+    ? <ActivityGroup key={item.key} segments={item.activities} imageSegments={segments} renderImages={images => renderFactorySlot('conversation.images.content', {
+        images: images.map(attachment => ({ attachment })), loadImage, align: 'start',
+      })} />
     : item.kind === 'image' && item.attachment
       ? showImages ? <Fragment key={item.key}>{renderFactorySlot('conversation.images.content', { images: [{ attachment: item.attachment }], loadImage, align: 'start' })}</Fragment> : null
       : <div key={item.key} className={css.prose} data-codex-commentary={item.phase !== 'final_answer' || undefined}>
@@ -132,7 +139,11 @@ function ProcessItems({ segments, renderFactorySlot, loadImage, running, fileMen
         </div>)
 }
 
-export function ActivityGroup({ segments }: { segments: readonly CodexProcessSegment[] }) {
+export function ActivityGroup({ segments, imageSegments = segments, renderImages }: {
+  segments: readonly CodexProcessSegment[]
+  imageSegments?: readonly CodexProcessSegment[]
+  renderImages?: ActivityImageRenderer
+}) {
   const [open, setOpen] = useState(false)
   const activities = segments.flatMap(segment => segment.activity ? [segment.activity] : [])
   const active = activities.filter(activity => activity.status === 'running')
@@ -156,7 +167,7 @@ export function ActivityGroup({ segments }: { segments: readonly CodexProcessSeg
       </button>
       {open && <div className={css.activities}>
         {segments.map(segment => segment.activity
-          ? <ActivityRow key={segment.key} activity={segment.activity} /> : null)}
+          ? <ActivityRow key={segment.key} activity={segment.activity} images={codexActivityImages(segment, imageSegments)} renderImages={renderImages} /> : null)}
       </div>}
     </div>
   )

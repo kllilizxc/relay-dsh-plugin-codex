@@ -18,7 +18,7 @@ export function createDshCodexPlugin(ctx, config = {}) {
     manifest: {
       id: "relay.dsh.codex", version: "1.0.0",
       provides: { "relay.dsh.codex.v1": "1.0.0" },
-      requires: { "relay.execution.codex.v1": "^1.0.0" },
+      requires: { "relay.execution.codex.v1": "^1.1.0" },
       optional: { "relay.terminal.codex.v1": "^1.0.0" },
       permissions: ["dsh:llm", "dsh:agents", "dsh:web-server"],
     },
