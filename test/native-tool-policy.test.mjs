@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
-import { READ_ONLY_NATIVE_TOOL_INSTRUCTIONS, NATIVE_TOOL_RESTRICTION_INSTRUCTIONS, registerNativeGrantAdapter } from "../native-tool-policy.mjs";
+import { READ_ONLY_NATIVE_TOOL_INSTRUCTIONS, NATIVE_TOOL_RESTRICTION_INSTRUCTIONS } from "../native-tool-policy.mjs";
 import { CodexSessionRuntime } from "../session-runtime.mjs";
 
 class Client extends EventEmitter {
@@ -37,7 +37,8 @@ function assertRestricted(params) {
   assert.equal(params.config["features.apps"], false);
   assert.equal(params.config["features.browser_use"], false);
   assert.equal(params.config["features.view_image"], false);
-  assert.equal(params.config["features.hooks"], false);
+  assert.equal(params.config["features.hooks"], true);
+  assert.equal(params.config["hooks.PreToolUse"][0].matcher, ".*");
   assert.equal(params.config.web_search, "disabled");
   assert.deepEqual(params.config.mcp_servers, { inherited: { enabled: false } });
   assert.deepEqual(params.config.plugins, { inherited: { enabled: false } });
@@ -80,22 +81,6 @@ test("native grant transitions unload existing threads before applying or removi
   assert.equal(restored.permissions, ":workspace");
   assert.equal(runtime.getSession(session.id).nativeToolsRestricted, false);
   assert.deepEqual(client.config, before);
-});
-
-test("unsupported native allowlists and failed unloads fail closed before a turn", async () => {
-  const client = new Client();
-  const runtime = new CodexSessionRuntime({ client });
-  await assert.rejects(runtime.createSession({ nativeToolAllowlist: ["shell"] }), /partial native tool grants/);
-  assert.equal(client.requests.length, 0);
-  const session = await runtime.createSession();
-  const original = client.request.bind(client);
-  client.request = async (method, params) => {
-    if (method === "thread/unsubscribe") throw Error("thread still active");
-    return original(method, params);
-  };
-  await assert.rejects(runtime.resumeSession(session.id, { nativeToolAllowlist: [] }), /thread still active/);
-  assert.equal(client.requests.some(r => r.method === "thread/resume"), false);
-  assert.equal(client.requests.some(r => r.method === "turn/start"), false);
 });
 
 test("native policy changes never unload or interrupt a running turn", async () => {
@@ -198,102 +183,16 @@ test("restricted threads reject stale native interactions but keep DSH dynamic t
 });
 
 
-function assertReadGrant(params, images) {
-  assert.equal(params.permissions, ":read-only");
-  assert.deepEqual(params.runtimeWorkspaceRoots, []);
-  assert.equal(params.approvalPolicy, "never");
-  assert.equal(params.config["features.shell_tool"], true);
-  assert.equal(params.config["features.unified_exec"], true);
-  assert.equal(params.config["features.view_image"], images);
-  for (const [key, value] of Object.entries(params.config)) {
-    if (key.startsWith("features.") && !["features.shell_tool", "features.unified_exec", "features.view_image"].includes(key)) {
-      assert.equal(value, false, key);
-    }
-  }
-  assert.equal(params.config.web_search, "disabled");
-  assert.deepEqual(params.config.mcp_servers, { inherited: { enabled: false } });
-  assert.deepEqual(params.config.plugins, { inherited: { enabled: false } });
-  assert.match(params.developerInstructions, /native file reads only/);
-  assert.doesNotMatch(params.developerInstructions, /disables native Codex tools/);
-}
-
-test("complete READ_GRANT retains sandboxed shell and image reads", async () => {
-  for (const allowlist of [["read", "read_image", "glob", "grep"], ["grep", "glob", "read_image", "read"]]) {
+test("partial and writable host grants keep native execution disabled", async () => {
+  for (const allowlist of [["read"], ["read_image"], ["glob", "grep"], ["read", "write", "edit"], ["shell"]]) {
     const client = new Client();
     const runtime = new CodexSessionRuntime({ client, cwd: "/workspace" });
-    const tools = [{ name: "workbench", inputSchema: {} }];
-    const session = await runtime.createSession({ nativeToolAllowlist: allowlist, sandbox: "danger-full-access", approvalPolicy: "on-request", dynamicTools: tools });
-    assertReadGrant(client.requests.at(-1).params, allowlist.includes("read_image"));
-    assert.deepEqual(client.requests.at(-1).params.dynamicTools, tools);
-    await runtime.sendMessage(session.id, { text: "inspect", sandbox: "danger-full-access", approvalPolicy: "on-request" });
-    const turn = client.requests.find(r => r.method === "turn/start").params;
-    assert.equal(turn.permissions, ":read-only");
-    assert.equal(turn.approvalPolicy, "never");
-    assert.deepEqual(turn.runtimeWorkspaceRoots, []);
-    assert.equal(turn.collaborationMode.settings.developer_instructions, READ_ONLY_NATIVE_TOOL_INSTRUCTIONS);
-    await runtime.forkSession(session.id, { lastTurnId: "turn", nativeToolAllowlist: allowlist });
-    assertReadGrant(client.requests.at(-1).params, allowlist.includes("read_image"));
+    const session = await runtime.createSession({ nativeToolAllowlist: allowlist, dynamicTools: [{name:"dsh",tools:[]}] });
+    assertRestricted(client.requests.at(-1).params);
+    assert.deepEqual(runtime.getSession(session.id).nativeToolAllowlist, allowlist);
+    await runtime.sendMessage(session.id, {text:"inspect",nativeToolAllowlist:allowlist});
+    assert.equal(client.requests.find(r=>r.method==="turn/start").params.permissions, ":read-only");
   }
-});
-
-test("read policy survives thread selection and runtime replacement, and transitions fail closed", async () => {
-  const client = new Client();
-  const runtime = new CodexSessionRuntime({ client });
-  const session = await runtime.createSession({ nativeToolAllowlist: ["read", "read_image", "glob", "grep"] });
-  await runtime.selectSession(session.id);
-  assertReadGrant(client.requests.at(-1).params, true);
-  const nextClient = new Client();
-  const next = new CodexSessionRuntime({ client: nextClient });
-  next.adoptStateFrom(runtime);
-  await next.selectSession(session.id);
-  assertReadGrant(nextClient.requests.at(-1).params, true);
-  await assert.rejects(next.resumeSession(session.id, { nativeToolAllowlist: ["grep"] }), /partial native tool grants/);
-  await next.resumeSession(session.id, { nativeToolAllowlist: [] });
-  assertRestricted(nextClient.requests.at(-1).params);
-  assert.equal(nextClient.requests.at(-1).params.developerInstructions, NATIVE_TOOL_RESTRICTION_INSTRUCTIONS);
-  await next.resumeSession(session.id);
-  assert.equal(nextClient.requests.at(-1).params.config, undefined);
-  assert.equal(next.getSession(session.id).nativeToolsRestricted, false);
-});
-
-test("write-containing and malformed partial grants fail before setup or a native turn", async () => {
-  for (const allowlist of [["read"], ["read_image"], ["glob", "grep"], ["read", "glob", "grep"], ["read", "write"], ["read", "shell"], ["grep", "edit"], ["web_search"], [null], "read", {}]) {
-    const client = new Client();
-    const runtime = new CodexSessionRuntime({ client });
-    await assert.rejects(runtime.createSession({ nativeToolAllowlist: allowlist }), /partial native tool grants/);
-    assert.deepEqual(client.requests, []);
-    const session = await runtime.createSession({ nativeToolAllowlist: [] });
-    client.requests.length = 0;
-    await assert.rejects(runtime.resumeSession(session.id, { nativeToolAllowlist: allowlist }), /partial native tool grants/);
-    await assert.rejects(runtime.sendMessage(session.id, { text: "work", nativeToolAllowlist: allowlist }), /partial native tool grants/);
-    assert.deepEqual(client.requests, []);
-  }
-});
-
-test("grant capability follows the registered adapter lifetime and rejects collisions", () => {
-  const key = Symbol.for("worka.nativeToolGrantSupport.v1");
-  const events = [];
-  const llm = { registerAdapter: (providers, adapter) => {
-    events.push(["registered", providers, adapter]);
-    return () => events.push(["disposed", llm[key].has("relay-codex")]);
-  } };
-  const adapter = {};
-  const ctx = { llm, root: { on: () => () => {} } };
-  const dispose = registerNativeGrantAdapter(ctx, "relay-codex", adapter);
-  const token = llm[key].get("relay-codex");
-  assert.deepEqual(token, { nativeToolAllowlist: true });
-  assert.throws(() => registerNativeGrantAdapter(ctx, "relay-codex", {}), /already registered/);
-  assert.equal(events.length, 1);
-  dispose();
-  assert.deepEqual(events[1], ["disposed", false]);
-  assert.equal(llm[key].has("relay-codex"), false);
-});
-
-test("failed registration does not advertise grant enforcement", () => {
-  const llm = { registerAdapter: () => { throw Error("registration failed"); } };
-  const ctx = { llm, root: { on: () => () => {} } };
-  assert.throws(() => registerNativeGrantAdapter(ctx, "relay-codex", {}), /registration failed/);
-  assert.equal(llm[Symbol.for("worka.nativeToolGrantSupport.v1")].has("relay-codex"), false);
 });
 
 test("turn cannot narrow or change the thread grant without reloading its config", async () => {
@@ -308,46 +207,4 @@ test("turn cannot narrow or change the thread grant without reloading its config
   client.requests.length = 0;
   await assert.rejects(runtime.sendMessage(session.id, { text: "work", nativeToolAllowlist: fullRead }), /resume the thread/);
   assert.deepEqual(client.requests, []);
-});
-
-test("Cordis route teardown and unrelated topology changes revoke capability synchronously", async () => {
-  const { Context } = await import("@deepseek-ai/cordis");
-  const { LlmRuntime } = await import("@deepseek-ai/dsh-llm");
-  const root = new Context();
-  new LlmRuntime(root);
-  const key = Symbol.for("worka.nativeToolGrantSupport.v1");
-  const adapter = name => ({ providerInfo: () => ({ id: name, name }), providerRetryPolicy: () => undefined });
-  let relayCleanup;
-  const relay = await root.plugin(scope => {
-    relayCleanup = registerNativeGrantAdapter(scope, "relay-codex", adapter("relay-codex"));
-  });
-  assert.equal(root.llm[key].has("relay-codex"), true);
-  const other = await root.plugin(scope => { scope.llm.registerAdapter(["other"], adapter("other")); });
-  assert.equal(root.llm[key].has("relay-codex"), false);
-  relayCleanup();
-  await other.dispose();
-  await relay.dispose();
-
-  // Simulate the underlying adapter effect disposing before the plugin host's
-  // separately deferred cleanup, as Cordis can do during fiber teardown.
-  const second = await root.plugin(scope => {
-    relayCleanup = registerNativeGrantAdapter(scope, "relay-codex", adapter("relay-codex"));
-  });
-  assert.equal(root.llm[key].has("relay-codex"), true);
-  let observed;
-  let replacement;
-  root.on("llm/adapters-updated", () => {
-    observed = root.llm[key].has("relay-codex");
-    if (!replacement && !root.llm.listProviders().some(provider => provider.id === "relay-codex")) {
-      assert.equal(observed, false, "teardown must revoke before a replacement can register");
-      replacement = root.llm.registerAdapter(["relay-codex"], adapter("relay-codex"));
-      assert.equal(root.llm[key].has("relay-codex"), false);
-    }
-  });
-  await second.dispose();
-  assert.equal(observed, false);
-  assert.equal(root.llm[key].has("relay-codex"), false);
-  relayCleanup();
-  replacement();
-  await root.fiber.dispose();
 });

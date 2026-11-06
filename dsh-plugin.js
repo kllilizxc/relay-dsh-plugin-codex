@@ -1,5 +1,4 @@
 import { registerNativeSkillsRoute } from "./native-skills-route.js";
-import { registerNativeGrantAdapter } from "./native-tool-policy.mjs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { definePlugin } from "./internal/plugin-sdk.mjs";
@@ -47,7 +46,7 @@ export function createDshCodexPlugin(ctx, config = {}) {
         preset: "relay-codex",
         listSkills: async (_id, cwd) => { await runtime.whenReady(); return runtime.listSkills(cwd); },
       }));
-      defer(registerNativeGrantAdapter(ctx, CODEX_PROVIDER, adapter));
+      defer(ctx.llm.registerAdapter([CODEX_PROVIDER], adapter));
       defer(registerCodexImportRoute(ctx, {
         importer,
         token: config.codexImportToken ?? process.env.RELAY_CODEX_IMPORT_TOKEN,

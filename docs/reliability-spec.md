@@ -84,31 +84,16 @@ promoted to this instruction slot. The native-tool boundary is appended in the
 same slot when a host restriction applies. These overrides are not persisted as
 user Session settings.
 
-`GenerateOptions.nativeToolAllowlist` is a trusted host restriction, separate from
-the DSH dynamic-tool catalogue. An omitted value keeps normal Codex tools. An empty
-list removes Relay's native helper tools, disables native execution/integration
-features, web search, inherited MCP servers and plugins, and forces read-only
-permissions with approval policy `never` at Thread setup and every Turn. Effective
-project configuration is read before restricted setup; failures abort setup.
-The complete `read`, `read_image`, `glob` and `grep` grant uses the same
-read-only permissions and `never` approval policy. It retains the sandboxed
-shell needed for reading and `view_image`. Subagents, plugins, MCP, web search,
-apps and other integrations stay disabled. Selecting or resuming a thread
-preserves that read policy. All other partial grants and invalid lists fail
-closed before setup because App Server cannot enforce individual read
-operations within a shell.
-
-Some Codex model catalogues still advertise a file-edit schema independently of
-feature flags. Read-only permissions deny writes; a developer instruction also
-identifies the allowed dynamic DSH tools. Native approval, question and stale
-Relay-helper requests are rejected before reaching DSH interactions. This policy
-does not widen the DSH tool catalogue or the host's tool authorization.
-
-Changing policy unloads an idle native Thread before resuming the same ID and
-history. A running Turn is never interrupted; failed unload/resume aborts the
-request. Removing policy resumes without feature overrides so current user and
-project configuration is restored instead of force-enabling tools. The policy is
-not persisted as a user's Session setting.
+`GenerateOptions.nativeToolAllowlist` communicates the host's effective native
+policy. Omission retains normal Codex behavior; an explicit list disables the
+native execution and integration features that Codex exposes, inherited MCP and
+plugins, and uses read-only permissions with approvals denied on every turn.
+The host-filtered DSH dynamic tools remain available. A best-effort pre-tool
+hook denies native calls while allowing DSH tools. This is a behavioral boundary
+for trusted local plugins, not an adversarial security boundary: Codex may expose
+`functions.exec` despite disabled execution features, and its hook failures can
+be fail-open. See https://github.com/openai/codex/issues/41979. The read-only
+sandbox independently prevents native filesystem writes.
 
 ## Plugin Hook trust propagation
 

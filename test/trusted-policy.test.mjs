@@ -215,14 +215,10 @@ test('injected developer response items never become assistant activity or cache
 });
 
 
-test('read-only native policy gets its own stable trusted receipt and never claims all native reads are disabled', async t => {
+test('read-only grants retain the same restricted native policy receipt', async t => {
   const f = await fixture(t); await f.ensure();
   const empty = await f.saved();
   await f.ensure('POLICY_A', ['read', 'read_image', 'glob', 'grep']);
-  assert.equal(f.runtime.updates.length, 1);
-  assert.ok(f.runtime.updates[0].text.includes(READ_ONLY_NATIVE_TOOL_INSTRUCTIONS));
-  assert.ok(!f.runtime.updates[0].text.includes(NATIVE_TOOL_RESTRICTION_INSTRUCTIONS));
-  assert.notEqual((await f.saved()).trustedPolicy.hash, empty.trustedPolicy.hash);
-  await f.ensure('POLICY_A', ['read', 'read_image', 'glob', 'grep']);
-  assert.equal(f.runtime.updates.length, 1);
+  assert.equal(f.runtime.updates.length, 0);
+  assert.equal((await f.saved()).trustedPolicy.hash, empty.trustedPolicy.hash);
 });

@@ -1,6 +1,6 @@
 {
   "name": "relay-dsh-plugin-codex",
-  "version": "0.2.5-rc.1-worka-public.8",
+  "version": "0.2.5-rc.1-worka-public.9",
   "private": true,
   "description": "Codex conversation backend for DeepSeek Harness, powered by the Codex App Server with approvals and DSH tool support.",
   "keywords": [

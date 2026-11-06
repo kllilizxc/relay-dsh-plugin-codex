@@ -177,9 +177,8 @@ test("trusted native grants exclude Relay builtins and reconfigure existing thre
   assert.equal(runtime.resumed, 2);
   assert.equal(runtime.sessions.get("thread-1").nativeToolAllowlist, undefined);
   assert.ok(runtime.sessions.get("thread-1").dynamicTools.some(tool => tool.name === "codex_app"));
-  const sent = runtime.sent.length;
-  await assert.rejects(collect(adapter.stream({ ...options, nativeToolAllowlist: ["shell"] })), /partial native tool grants/);
-  assert.equal(runtime.sent.length, sent);
+  await collect(adapter.stream({ ...options, nativeToolAllowlist: ["read"] }));
+  assert.deepEqual(runtime.sent.at(-1).message.nativeToolAllowlist, ["read"]);
 });
 
 test("business turns preserve current trusted system instructions without promoting runtime references", async () => {

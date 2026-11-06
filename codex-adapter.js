@@ -1659,7 +1659,7 @@ function trustedSystemInstructions(options) {
   // remain user-role reference material and must never gain this authority.
   return [
     options.system,
-    ...options.messages.filter(message => message.role === "system").map(message =>
+    ...options.messages.filter(message => message.role === "system").slice(-1).map(message =>
       (message.content ?? []).filter(block => block.type === "text").map(block => block.text).join("\n")),
   ].filter(text => typeof text === "string" && text.trim()).join("\n\n") || undefined;
 }
