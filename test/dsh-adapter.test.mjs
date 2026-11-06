@@ -1738,6 +1738,63 @@ test("Codex image media types are derived from supported byte signatures", () =>
   for (const [data, expected] of samples) assert.equal(detectImageMediaType(data), expected);
 });
 
+test("completed imageView outside the workspace becomes one durable attachment", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "relay-viewed-image-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const workspace = join(directory, "workspace");
+  await mkdir(workspace);
+  const imagePath = join(directory, "viewed.png");
+  const data = pngFixture("VIEWED_OUTSIDE_WORKSPACE");
+  await writeFile(imagePath, data);
+  const saved = [];
+  const runtime = new McpImageRuntime({ type: "imageView", id: "viewed-outside", path: imagePath });
+  const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve(), attachments: {
+    async saveImage(input) {
+      saved.push(input);
+      return { attachmentId: "viewed-attachment", mediaType: input.mediaType, bytes: input.data.length, name: input.name };
+    },
+  } });
+  const agent = fakeAgent({ cwd: workspace });
+  adapter.attachAgent(agent);
+  const chunks = await collect(adapter.stream({
+    provider: "relay-codex", model: "codex-test", sessionId: agent.id,
+    messages: [{ role: "user", source: { kind: "user" }, content: [{ type: "text", text: "View the image" }] }],
+  }));
+  assert.equal(saved.length, 1, "completion snapshot must not duplicate the viewed image");
+  assert.deepEqual(Buffer.from(saved[0].data), data);
+  const blocks = chunks.filter(chunk => chunk.type === "block-end");
+  assert.deepEqual(blocks.map(chunk => chunk.block.type), ["image", "text"]);
+  assert.equal(blocks[0].block.attachment.attachmentId, "viewed-attachment");
+  assert.equal(blocks[0].block.attachment.mediaType, "image/png");
+  assert.equal(chunks.at(-1).type, "finish");
+});
+
+test("unreadable viewed images preserve the final answer and never become attachments", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "relay-invalid-viewed-image-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const invalid = join(directory, "invalid.png");
+  await writeFile(invalid, "not image bytes");
+  for (const imagePath of [invalid, join(directory, "missing.png")]) {
+    const saved = [];
+    const runtime = new McpImageRuntime({ type: "imageView", id: "invalid-viewed", path: imagePath });
+    const adapter = new CodexDshAdapter({ runtime, ready: Promise.resolve(), attachments: {
+      async saveImage(input) { saved.push(input); },
+    } });
+    const agent = fakeAgent();
+    adapter.attachAgent(agent);
+    const chunks = await collect(adapter.stream({
+      provider: "relay-codex", model: "codex-test", sessionId: agent.id,
+      messages: [{ role: "user", source: { kind: "user" }, content: [{ type: "text", text: "View" }] }],
+    }));
+    assert.equal(saved.length, 0);
+    const blocks = chunks.filter(chunk => chunk.type === "block-end");
+    assert.deepEqual(blocks.map(chunk => chunk.block.type), ["text", "text"]);
+    assert.match(blocks[0].block.text, /^Image preview unavailable:/);
+    assert.equal(blocks[1].block.text, "MCP_IMAGE_SEEN");
+    assert.equal(chunks.at(-1).type, "finish");
+  }
+});
+
 test("generated-image completion becomes one durable image before the final answer", async () => {
   const jpeg = await readFile(new URL("../docs/images/dsh-new-session-backends.jpg", import.meta.url));
   const saved = [];

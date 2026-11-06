@@ -236,9 +236,14 @@ media type. The DSH attachment store remains the authority for full decode,
 normalization, size, and pixel-limit validation.
 
 A filename such as `completed-clean.png` may therefore produce an
-`image/jpeg` attachment when its bytes are JPEG. Workspace and generated-image
-root checks still run before any local file is read; byte detection does not
-expand the allowed filesystem boundary.
+`image/jpeg` attachment when its bytes are JPEG. A completed App Server
+`imageView` authorizes importing that specific viewed file into DSH attachments,
+including files outside the DSH working directory. The adapter does not perform
+another workspace-root check for this already completed read. It still validates
+image bytes and stores a durable attachment rather than exposing a local path.
+Saved `imageGeneration` files retain workspace and generated-image root checks.
+Missing files, invalid image bytes, and attachment-store failures retain the
+same failure isolation described below.
 
 Image preview admission and storage are projection concerns. Failure of one
 image emits one terminal text placeholder and a Host warning containing only a
