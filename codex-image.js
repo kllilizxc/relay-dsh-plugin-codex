@@ -2,7 +2,16 @@ import { readFile, realpath } from "node:fs/promises";
 import { basename, resolve, sep } from "node:path";
 
 export async function importCodexImage(path, roots, attachments) {
-  const target = await allowedRealPath(path, roots);
+  return saveCodexImage(await allowedRealPath(path, roots), attachments);
+}
+
+// Called only for the file returned by a completed App Server imageView item.
+// Codex already admitted that read; do not infer permission from the DSH cwd again.
+export async function importCodexViewedImage(path, attachments) {
+  return saveCodexImage(await realpath(resolve(path)), attachments);
+}
+
+async function saveCodexImage(target, attachments) {
   const data = await readFile(target);
   const mediaType = detectImageMediaType(data);
   if (!mediaType) throw new Error("unsupported or malformed Codex image data");

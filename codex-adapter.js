@@ -5,7 +5,7 @@ import { basename, resolve } from "node:path";
 import { createMessage, createToolResultMessage, LlmAdapter, LlmError, projectFilesToText } from "@deepseek-ai/dsh-llm";
 import { CODEX_ACTIVITY_TOOL } from "./codex-activity-wire.mjs";
 
-import { importCodexGeneratedImage, importCodexImage, importCodexMcpImage } from "./codex-image.js";
+import { importCodexGeneratedImage, importCodexViewedImage, importCodexMcpImage } from "./codex-image.js";
 import { materializeCodexAttachment } from "./codex-image-input.js";
 import { CODEX_APP_DYNAMIC_TOOLS, codexDshToolSurface } from "./codex-tools.js";
 import { rebindRequiredStatus } from "./connection-status.mjs";
@@ -1027,7 +1027,7 @@ export class CodexDshAdapter extends LlmAdapter {
       try {
         const attachment = item.type === "imageGeneration"
           ? await importCodexGeneratedImage(item, roots, this.attachments)
-          : await importCodexImage(item.path, roots, this.attachments);
+          : await importCodexViewedImage(item.path, this.attachments);
         return [
           { type: "block-start", index, blockType: "image" },
           { type: "block-end", index, block: { type: "image", attachment } },
