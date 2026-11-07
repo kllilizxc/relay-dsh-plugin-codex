@@ -3612,3 +3612,27 @@ test("commentary streams before a held dynamic tool and the Codex turn complete"
   }
   assert.equal(seen.at(-1).type, "finish");
 });
+
+test('forwards turn usage for native and standalone inference without prior thread counts', async () => {
+  class UsageRuntime extends FakeRuntime {
+    async sendMessage(threadId, message) {
+      this.sent.push({threadId,message}); const turnId = 'usage-turn';
+      const s=(input,output,cached,reasoning)=>({inputTokens:input,outputTokens:output,cachedInputTokens:cached,cacheWriteInputTokens:0,reasoningOutputTokens:reasoning,totalTokens:input+output});
+      queueMicrotask(() => {
+        this.emit('activity', notification('thread/tokenUsage/updated',threadId,'older-turn',{tokenUsage:{total:s(900,90,300,9),last:s(900,90,300,9)}}));
+        this.emit('activity', {method:'thread/tokenUsage/updated',params:{threadId,tokenUsage:{total:s(900,90,300,9),last:s(900,90,300,9)}}});
+        this.emit('activity', notification('thread/tokenUsage/updated',threadId,turnId,{tokenUsage:{total:s(1000,100,340,11),last:s(100,10,40,2)}}));
+        this.emit('activity', notification('thread/tokenUsage/updated',threadId,turnId,{tokenUsage:{total:s(1200,120,410,16),last:s(200,20,70,5)}}));
+        this.emit('activity', {method:'turn/completed',params:{threadId,turn:{id:turnId,status:'completed',items:[]}}});
+      });
+      return {id:turnId,status:'inProgress',items:[]};
+    }
+  }
+  for (const native of [true,false]) {
+    const runtime=new UsageRuntime(), adapter=new CodexDshAdapter({runtime,ready:Promise.resolve()});
+    const agent=fakeAgent(); if(native)adapter.attachAgent(agent);
+    const chunks=await collect(adapter.stream({provider:'relay-codex',model:'codex-test',...(native?{sessionId:agent.id}:{}),tools:[],messages:[{role:'user',source:{kind:'user'},content:[{type:'text',text:'test'}]}]}));
+    assert.deepEqual(chunks.filter(c=>c.type==='usage'),[{type:'usage',usage:{inputTokens:300,outputTokens:30,totalTokens:330,cacheReadTokens:110,cacheWriteTokens:0,reasoningTokens:7}}]);
+    assert.equal(chunks.at(-1).type,'finish');
+  }
+});

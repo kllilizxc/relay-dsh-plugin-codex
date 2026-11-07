@@ -1,3 +1,4 @@
+import { turnUsage } from "./token-usage.mjs";
 import { sessionEvents, toolCallId as ToolCallId } from "./dsh-compat.mjs";
 import { homedir } from "node:os";
 import { basename, resolve } from "node:path";
@@ -791,6 +792,7 @@ export class CodexDshAdapter extends LlmAdapter {
 
     let turnId = null;
     const state = createStreamState();
+    const usage = turnUsage();
     state.asyncQuestionsEnabled = supportsAsyncQuestions(options.tools);
     state.bindingEpoch = this.bindingEpochs.get(sessionId) ?? 0;
     const step = events.findLast(event => event.type === "step/start");
@@ -812,6 +814,7 @@ export class CodexDshAdapter extends LlmAdapter {
         options.signal?.throwIfAborted();
         const params = message.params ?? {};
         if (params.turnId && params.turnId !== turnId) continue;
+        if (message.method === "thread/tokenUsage/updated") { if (params.turnId === turnId) usage.observe(params.tokenUsage); continue; }
         if (message.method === "turn/completed") {
           if (params.turn?.id !== turnId) continue;
           for (const item of params.turn.items ?? []) {
@@ -838,6 +841,7 @@ export class CodexDshAdapter extends LlmAdapter {
         yield { type: "block-end", index: block.index, block: { type: block.type, text: block.text } };
       }
       options.signal?.throwIfAborted();
+      if (usage.result()) yield { type: "usage", usage: usage.result() };
       if (completedTurn.status === "failed") {
         yield {
           type: "finish",
@@ -956,11 +960,13 @@ export class CodexDshAdapter extends LlmAdapter {
       });
       turnId = started.id;
       const state = createStreamState();
+      const usage = turnUsage();
       let completedTurn = null;
       while (!completedTurn) {
         const message = await queue.next();
         const params = message.params ?? {};
         if (params.turnId && params.turnId !== turnId) continue;
+        if (message.method === "thread/tokenUsage/updated") { if (params.turnId === turnId) usage.observe(params.tokenUsage); continue; }
         if (message.method === "turn/completed") {
           if (params.turn?.id !== turnId) continue;
           for (const item of params.turn.items ?? []) {
@@ -976,6 +982,7 @@ export class CodexDshAdapter extends LlmAdapter {
         block.closed = true;
         yield { type: "block-end", index: block.index, block: { type: block.type, text: block.text } };
       }
+      if (usage.result()) yield { type: "usage", usage: usage.result() };
       if (completedTurn.status === "failed") {
         yield {
           type: "finish",
